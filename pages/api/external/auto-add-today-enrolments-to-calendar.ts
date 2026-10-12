@@ -8,6 +8,7 @@ import { getTrainingPartnerIdentifiers } from '../../../lib/trainingPartnerIdent
 import { getLocalYMD } from '../../../lib/dateHelpers';
 import { calendarWritesAllowed } from '../../../lib/calendar/calendarGuard';
 import { ensureEventsForEnrolledRuns, EnsureEnrolledRunsResult } from '../../../lib/calendar/ensureEventsForEnrolledRuns';
+import { learnerMovedAwayFromRun } from '../../../lib/calendar/learnerRunGuard';
 
 /**
  * Scheduler endpoint (every 3 hours):
@@ -121,7 +122,13 @@ async function _runAutomationInner(): Promise<{
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
          ON CONFLICT (enrolment_reference) DO UPDATE SET
            status = EXCLUDED.status,
-           raw_data = EXCLUDED.raw_data`,
+           raw_data = EXCLUDED.raw_data,
+           -- Follow SSG when an enrolment is moved to another run; keeping the old
+           -- run here made this job re-add the learner to the OLD class's event.
+           course_title = COALESCE(EXCLUDED.course_title, ssg_enrolment_record.course_title),
+           course_ref_code = COALESCE(EXCLUDED.course_ref_code, ssg_enrolment_record.course_ref_code),
+           course_run_id = COALESCE(EXCLUDED.course_run_id, ssg_enrolment_record.course_run_id),
+           start_date = COALESCE(EXCLUDED.start_date, ssg_enrolment_record.start_date)`,
         [
           ref,
           normDate(enr?.trainee?.enrolmentDate) || normDate(item?.meta?.createdOn),
@@ -143,7 +150,7 @@ async function _runAutomationInner(): Promise<{
 
   // 2) Pull Confirmed today records from local staging table
   const rows = (await pool.query(
-    `SELECT enrolment_reference, learner_name, learner_email, course_title,
+    `SELECT enrolment_reference, learner_name, learner_email, learner_nric, course_title,
             course_ref_code, course_run_id, start_date, status
      FROM ssg_enrolment_record
      WHERE enrolment_date = $1::date
@@ -186,7 +193,7 @@ async function _runAutomationInner(): Promise<{
   const events = evts.data.items || [];
 
   // 4) For each confirmed row, patch the matching event to add the learner email
-  let added = 0, alreadyAttendee = 0, noEvent = 0, errors = 0;
+  let added = 0, alreadyAttendee = 0, noEvent = 0, errors = 0, movedAway = 0;
   for (const r of rows) {
     const email = (r.learner_email || '').trim();
     if (!email || !r.course_title) { noEvent++; continue; }
@@ -199,6 +206,13 @@ async function _runAutomationInner(): Promise<{
       return ed === startIso;
     });
     if (!evt || !evt.id) { noEvent++; continue; }
+    // A learner since moved to another run of this course must not go back onto
+    // this (old) class's event.
+    if (r.course_run_id && await learnerMovedAwayFromRun(String(r.course_run_id), email, r.learner_nric)) {
+      console.log(`⏭️  [auto-add-today-cal] ${email} moved to another run — not re-adding to "${evt.summary}" (${startIso})`);
+      movedAway++;
+      continue;
+    }
     const existing = evt.attendees || [];
     if (existing.some(a => (a.email || '').toLowerCase() === email.toLowerCase())) {
       alreadyAttendee++;
@@ -218,7 +232,7 @@ async function _runAutomationInner(): Promise<{
     }
   }
 
-  console.log(`📋 [auto-add-today-cal] Done: pulled=${rawItems.length}, confirmedToday=${rows.length}, added=${added}, alreadyAttendee=${alreadyAttendee}, noEvent=${noEvent}, errors=${errors}`);
+  console.log(`📋 [auto-add-today-cal] Done: pulled=${rawItems.length}, confirmedToday=${rows.length}, added=${added}, alreadyAttendee=${alreadyAttendee}, movedAway=${movedAway}, noEvent=${noEvent}, errors=${errors}`);
   return { success: true, pulled: rawItems.length, confirmedToday: rows.length, added, alreadyAttendee, noEvent, errors };
 }
 

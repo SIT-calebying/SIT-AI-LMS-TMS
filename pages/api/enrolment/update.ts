@@ -7,6 +7,8 @@ import { OptionalSelector } from '../../../lib/ssg/models/course-runs';
 import pool from '../../../lib/db';
 import crypto from 'crypto';
 import { COURSE_ID_BY_ANY_CODE_SQL } from '../../../lib/courseCode';
+import { syncClassAttendees } from '../../../lib/calendar/ensureClassCalendarEvent';
+import { triggerClassCalendarSync } from '../../../lib/calendar/triggerClassCalendarSync';
 
 /**
  * POST /api/enrolment/update
@@ -81,15 +83,21 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
     }
 
     // ── 2. Sync DB ────────────────────────────────────────────────────────────
+    // Old and new run, for the calendar tidy-up after the move commits.
+    let oldRunUuid: string | null = null;
+    let newRunUuid: string | null = null;
+    let moveCommitted = false;
+
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
 
       // Find enrollment row — ignore if not found
       const enrolRow = await client.query(
-        `SELECT id, raw_data FROM enrollment WHERE enrolment_id = $1 LIMIT 1`,
+        `SELECT id, raw_data, course_run_id FROM enrollment WHERE enrolment_id = $1 LIMIT 1`,
         [enrolmentId]
       );
+      oldRunUuid = enrolRow.rows[0]?.course_run_id ?? null;
 
       if (enrolRow.rows.length === 0) {
         console.log(`ℹ️ enrolment_id ${enrolmentId} not found in DB — skipping`);
@@ -234,6 +242,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
               WHERE id = $3`,
             [courseRunUuid, rawData ? JSON.stringify(rawData) : enrolRow.rows[0].raw_data, enrollmentUuid]
           );
+          newRunUuid = courseRunUuid;
           console.log(`✅ Enrollment ${enrolmentId} updated → course_run ${courseRunId}`);
         } else {
           await client.query(`UPDATE enrollment SET updated_at = NOW() WHERE id = $1`, [enrollmentUuid]);
@@ -242,11 +251,20 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
       }
 
       await client.query('COMMIT');
+      moveCommitted = true;
     } catch (dbErr) {
       await client.query('ROLLBACK');
       console.error('⚠️ DB sync error (non-fatal):', dbErr);
     } finally {
       client.release();
+    }
+
+    // Calendar (best-effort, never delays or fails the response): the learner has
+    // moved, so drop them from the OLD class's event (they now count as moved away)
+    // and make sure the NEW class's event exists with them on it.
+    if (moveCommitted && oldRunUuid && newRunUuid && oldRunUuid !== newRunUuid) {
+      syncClassAttendees(oldRunUuid).catch((e) => console.error('⚠️ old-run calendar tidy after enrolment move failed:', e));
+      triggerClassCalendarSync(newRunUuid);
     }
 
     return res.status(200).json({ success: true, data: parsed?.data ?? parsed });

@@ -1,4 +1,5 @@
 import { google } from 'googleapis';
+import { learnerMovedAwayFromRun } from '../calendar/learnerRunGuard';
 import pool from '../db';
 import { getGoogleCredentials } from '../google-auth/googleAuth';
 import { getTrainingPartnerIdentifiers } from '../trainingPartnerIdentifiers';
@@ -617,7 +618,7 @@ export async function syncAllDaApplicantsToCalendar(courseRunUuid: string): Prom
     // 2. Find confirmed DA apps
     // We check both internal and external IDs in da_application.course_run_id
     const daRes = await pool.query(
-      `SELECT id, trainee_email, course_title 
+      `SELECT id, trainee_email, trainee_id, course_title 
        FROM da_application 
        WHERE (course_run_id = $1 OR course_run_id = $2)
          AND enrolment_status = 'Confirmed'
@@ -631,6 +632,13 @@ export async function syncAllDaApplicantsToCalendar(courseRunUuid: string): Prom
     console.log(`🔄 [da-calendar-sync] Syncing ${daRes.rows.length} DA applicants for course run ${courseRunUuid}`);
 
     for (const da of daRes.rows) {
+      // Skip applicants who have since moved to another run of this course — their
+      // application row still points here, which used to re-add them to this
+      // (old) class's event every time its sessions were synced.
+      if (await learnerMovedAwayFromRun(courseRunUuid, da.trainee_email, da.trainee_id)) {
+        console.log(`⏭️  [da-calendar-sync] ${da.trainee_email} moved to another run — not re-adding to ${ssgRunId}`);
+        continue;
+      }
       const result = await addDaLearnerToCalendar(
         da.trainee_email,
         courseRunUuid,
@@ -655,7 +663,7 @@ export async function syncAllDaApplicantsToCalendar(courseRunUuid: string): Prom
 export async function retryFailedCalendarSyncs(): Promise<void> {
   try {
     const daRes = await pool.query(
-      `SELECT id, trainee_email, course_title, course_run_id, course_start_date 
+      `SELECT id, trainee_email, trainee_id, course_title, course_run_id, course_start_date 
        FROM da_application 
        WHERE enrolment_status = 'Confirmed'
          AND (calendar_added IS NOT TRUE)
@@ -678,6 +686,13 @@ export async function retryFailedCalendarSyncs(): Promise<void> {
       );
       
       const courseRunUuid = runRes.rows[0]?.id;
+
+      // The application still names the run applied for; a learner since moved to
+      // another run of the course must not be put back on this one.
+      if (await learnerMovedAwayFromRun(String(courseRunUuid || da.course_run_id), da.trainee_email, da.trainee_id)) {
+        console.log(`⏭️  [da-calendar-sync] retry: ${da.trainee_email} moved to another run — not re-adding to ${da.course_run_id}`);
+        continue;
+      }
       
       const calResults = await addDaLearnerToCalendar(
         da.trainee_email,

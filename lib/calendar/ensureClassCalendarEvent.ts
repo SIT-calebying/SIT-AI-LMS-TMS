@@ -293,7 +293,18 @@ export async function syncClassAttendees(
     `SELECT lower(btrim(au.email)) AS email FROM enrollment e JOIN app_user au ON au.id=e.user_id WHERE e.course_run_id=$1 AND nullif(btrim(au.email),'') IS NOT NULL
      UNION SELECT lower(btrim(t.trainer_email)) FROM course_run_trainer t WHERE t.course_run_id=$1 AND nullif(btrim(t.trainer_email),'') IS NOT NULL
      UNION SELECT lower(btrim(ti.trainer_email)) FROM trainer_invitation ti WHERE ti.course_run_id=$1 AND nullif(btrim(ti.trainer_email),'') IS NOT NULL
-     UNION SELECT lower(btrim(cr.tpg_assigned_trainer_email)) FROM course_run cr WHERE cr.id=$1 AND $2::boolean AND nullif(btrim(cr.tpg_assigned_trainer_email),'') IS NOT NULL`,
+     UNION SELECT lower(btrim(cr.tpg_assigned_trainer_email)) FROM course_run cr WHERE cr.id=$1 AND $2::boolean AND nullif(btrim(cr.tpg_assigned_trainer_email),'') IS NOT NULL
+     -- Learners who MOVED to another current/upcoming run of the same course: their
+     -- enrolment row no longer points here, so without this they'd never be dropped
+     -- from this event (and admins' manual removals didn't stick). They're only
+     -- removed when not also Confirmed in this run (the desired set wins).
+     UNION SELECT lower(btrim(au.email)) FROM enrollment e
+             JOIN app_user au ON au.id = e.user_id
+             JOIN course_run cr2 ON cr2.id = e.course_run_id
+            WHERE cr2.course_id = (SELECT course_id FROM course_run WHERE id = $1)
+              AND cr2.id <> $1 AND e.enrolment_status = 'Confirmed'
+              AND cr2.end_date >= (NOW() AT TIME ZONE 'Asia/Singapore')::date
+              AND nullif(btrim(au.email),'') IS NOT NULL`,
     [run.id, tpg]
   );
   const known = new Set(knownRows.rows.map(r => r.email));
