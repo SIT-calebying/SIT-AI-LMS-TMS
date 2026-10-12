@@ -51,6 +51,8 @@ function normalizeApplication(app: DirectCourseApplication): Record<string, unkn
   return {
     'Application ID': cleanString(app.applicationId),
     'Application Date': isoDateOnly(app.confirmedOn || app.createdOn || app.modifiedOn),
+    'TPG Created On': cleanString(app.createdOn),
+    'TPG Modified On': cleanString(app.modifiedOn),
     'Application Status': cleanString(app.applicationStatus),
     // SSG returns "Confirmed" for both paid and unpaid learners; the portal's
     // "Confirmed (Pending payment)" comes from paymentDetail.status ("Pending" /
@@ -79,24 +81,35 @@ function normalizeApplication(app: DirectCourseApplication): Record<string, unkn
   };
 }
 
-/** Shared read-only retrieval; manual preview and scheduled enrolment use identical filters. */
-export async function retrieveDirectApplications(filters: Record<string, unknown> = {}) {
+interface RetrievalDependencies {
+  credentials: () => ReturnType<ReturnType<typeof getSSGCredentialsService>['getSSGCredentials']>;
+  partner: typeof getTrainingPartnerIdentifiers;
+  api: typeof createSSGDirectCourseApplicationAPI;
+}
+
+/** Manual previews stay upcoming-only; source sync must see past-run cancellations too. */
+export async function retrieveDirectApplications(
+  filters: Record<string, unknown> = {}, options: { syncExisting?: boolean } = {},
+  dependencies: RetrievalDependencies = {
+    credentials: () => getSSGCredentialsService().getSSGCredentials(),
+    partner: getTrainingPartnerIdentifiers, api: createSSGDirectCourseApplicationAPI,
+  },
+) {
     const req = { body: filters };
-    const credentials = await getSSGCredentialsService().getSSGCredentials();
+    const credentials = await dependencies.credentials();
     if (!credentials) {
       throw new Error('SSG credentials are not configured');
     }
 
-    const tp = await getTrainingPartnerIdentifiers();
+    const tp = await dependencies.partner();
     const uen = cleanString(req.body?.uen) || credentials.uen || tp.uen;
     const tpCode = cleanString(req.body?.tpCode) || tp.code;
     if (!uen || !tpCode) {
       throw new Error('Missing UEN or Training Provider code');
     }
 
-    // Upcoming classes only. Everything retrieved here goes on to be enrolled
-    // and invoiced, so a class that has already started must never come back.
-    // The earliest run start date we ask SSG for is today (Singapore).
+    // Manual enrolment previews only show upcoming classes. Source sync bypasses
+    // this floor so updates/cancellations to existing past runs remain visible.
     const todayIso = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Singapore' });
     const todayYmd = Number(todayIso.replace(/-/g, ''));
 
@@ -113,7 +126,7 @@ export async function retrieveDirectApplications(filters: Record<string, unknown
       ? Math.min(Math.floor(pageSizeRaw), DEFAULT_PAGE_SIZE)
       : DEFAULT_PAGE_SIZE;
 
-    const api = createSSGDirectCourseApplicationAPI(
+    const api = dependencies.api(
       credentials.ssgApiBaseUrl || process.env.SSG_API_URL || process.env.SSG_API_BASE_URL || 'https://api.ssg-wsg.sg',
       credentials,
     );
@@ -134,7 +147,7 @@ export async function retrieveDirectApplications(filters: Record<string, unknown
       // Confirmed, ask SSG for every status and keep the enrollable ones below.
       applicationStatus: wantConfirmed ? undefined : requestedStatus || undefined,
       lastUpdateDate,
-      runStartDate: {
+      runStartDate: options.syncExisting ? undefined : {
         from: runStartFrom,
         to: parseDateFilter(req.body?.runStartDateTo),
       },
@@ -153,7 +166,7 @@ export async function retrieveDirectApplications(filters: Record<string, unknown
     });
     // "Confirmed" plus its variants such as "Confirmed (Pending payment)" —
     // all enrollable per lib/da-status.ts.
-    const rows = wantConfirmed
+    const rows = options.syncExisting ? allRows : wantConfirmed
       ? upcomingRows.filter((row) => String(row['Application Status'] || '').trim().toLowerCase().startsWith('confirmed'))
       : upcomingRows;
 
@@ -186,7 +199,7 @@ export async function retrieveDirectApplications(filters: Record<string, unknown
       success: true,
       total,
       fetched: rows.length,
-      skippedPastClasses: allRows.length - upcomingRows.length,
+      skippedPastClasses: options.syncExisting ? 0 : allRows.length - upcomingRows.length,
       lmsStatus,
       upcomingFrom: todayIso,
       pages: pagesFetched,

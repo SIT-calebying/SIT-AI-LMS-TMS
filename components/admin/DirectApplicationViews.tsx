@@ -275,13 +275,13 @@ const DirectApplicationAutomationReport: React.FC = () => {
     const formatTime = (value: string) => new Date(value).toLocaleString('en-SG', {
         timeZone: 'Asia/Singapore', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true,
     });
-    const hasIssues = latest?.error_count > 0 || report?.attentionCount > 0;
+    const hasIssues = (latest?.error_count ?? 0) > 0 || (report?.attentionCount ?? 0) > 0;
     return (
         <Card className="p-5 dark:bg-gray-800 dark:border-gray-700">
             <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                     <h3 className="text-base font-semibold text-gray-900 dark:text-white">Automatic fetch &amp; enrol</h3>
-                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Daily at 9 AM · 12 PM · 3 PM · 6 PM SGT. Confirmed upcoming applications only.</p>
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Daily at 9 AM · 12 PM · 3 PM · 6 PM SGT. Syncs new applications, updates and cancellations. Auto-enrols confirmed upcoming classes.</p>
                 </div>
                 <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${report?.enabled ? pillClasses.green : pillClasses.amber}`}>
                     {error ? 'Report unavailable' : !report ? 'Loading…' : report.enabled ? 'Schedule enabled' : 'Schedule disabled'}
@@ -297,16 +297,20 @@ const DirectApplicationAutomationReport: React.FC = () => {
                     </p>
                     {latest && <dl className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
                         {[
-                            ['Fetched', latest.fetched], ['Newly enrolled', latest.enrolled],
-                            ['Already enrolled', latest.already_enrolled], ['Errors', latest.error_count],
+                            ['Fetched', latest.fetched], ['Updated / imported', latest.imported],
+                            ['Unchanged', latest.unchanged ?? 0], ['Newly enrolled', latest.enrolled],
+                            ['Already enrolled', latest.already_enrolled], ['Cancelled', latest.cancelled ?? 0], ['Errors', latest.error_count],
                         ].map(([label, value]) => <div key={label} className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-900/40">
                             <dt className="text-xs text-gray-500 dark:text-gray-400">{label}</dt>
                             <dd className={`mt-1 text-xl font-semibold tabular-nums ${label === 'Errors' && Number(value) > 0 ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-white'}`}>{value}</dd>
                         </div>)}
                     </dl>}
-                    {latest?.deferred > 0 && <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">{latest.deferred} application(s) already processing in another run; not triggered twice.</p>}
+                    {latest?.last_update_date && <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">
+                        {latest.recovery ? '180-day recovery scan' : 'Recent updates'} · since {String(latest.last_update_date).slice(0, 10)}.
+                    </p>}
+                    {latest && latest.deferred > 0 && <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">{latest.deferred} application(s) already processing in another run; not triggered twice.</p>}
                     {hasIssues && <details className="mt-3 text-sm text-amber-800 dark:text-amber-300">
-                        <summary className="cursor-pointer">Review issues · {latest?.error_count || 0} in last run · {report.attentionCount} upcoming application(s) need attention</summary>
+                        <summary className="cursor-pointer">Review issues · {latest?.error_count || 0} in last run · {report.attentionCount} application(s) need attention</summary>
                         <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto text-xs">
                             {(latest?.errors || []).map((issue, i) => <li key={`run-${i}`}>{issue.applicationId ? `${issue.applicationId}: ` : ''}{issue.step} — {issue.message}</li>)}
                             {(report.attention || []).map(item => <li key={item.application_id}>{item.application_id}: {item.auto_enrol_error || item.auto_enrol_status || 'Processing has not completed'}</li>)}

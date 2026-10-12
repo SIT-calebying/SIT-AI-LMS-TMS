@@ -439,7 +439,8 @@ export async function removeDaLearnerFromCalendar(
   learnerEmail: string,
   courseRunUuid: string,
   courseTitle: string,
-  fallbackStartDate?: string | Date | null
+  fallbackStartDate?: string | Date | null,
+  options: { throwOnError?: boolean; allowDisabled?: boolean } = {},
 ): Promise<{ totalSessions: number; removedFrom: number }> {
   const result = { totalSessions: 0, removedFrom: 0 };
   if (!learnerEmail || !courseTitle) return result;
@@ -451,6 +452,7 @@ export async function removeDaLearnerFromCalendar(
     );
     const removeSkip = calendarSkipReason(tpRes.rows[0]?.sync_google_calendar);
     if (removeSkip) {
+      if (options.throwOnError && !options.allowDisabled) throw new Error(`Calendar removal deferred: ${removeSkip}`);
       console.log(`📅 [da-calendar-remove] skipping — ${removeSkip}`);
       return result;
     }
@@ -512,7 +514,10 @@ export async function removeDaLearnerFromCalendar(
     }
 
     datesToSync = Array.from(new Set(datesToSync.filter(Boolean)));
-    if (datesToSync.length === 0) return result;
+    if (datesToSync.length === 0) {
+      if (options.throwOnError) throw new Error('Calendar removal could not resolve course session dates');
+      return result;
+    }
     result.totalSessions = datesToSync.length;
 
     // 3. Fetch calendar events in bulk
@@ -522,15 +527,16 @@ export async function removeDaLearnerFromCalendar(
     const maxD = new Date(sortedDates[sortedDates.length - 1] + 'T23:59:59Z');
     maxD.setDate(maxD.getDate() + 3);
 
-    const eventsResponse = await calendar.events.list({
-      calendarId,
-      timeMin: minD.toISOString(),
-      timeMax: maxD.toISOString(),
-      singleEvents: true,
-      maxResults: 2500,
-    });
-
-    const allEvents = eventsResponse.data.items || [];
+    const allEvents: import('googleapis').calendar_v3.Schema$Event[] = [];
+    let pageToken: string | undefined;
+    do {
+      const eventsResponse = await calendar.events.list({
+        calendarId, timeMin: minD.toISOString(), timeMax: maxD.toISOString(),
+        singleEvents: true, maxResults: 2500, pageToken,
+      });
+      allEvents.push(...(eventsResponse.data.items || []));
+      pageToken = eventsResponse.data.nextPageToken || undefined;
+    } while (pageToken);
     const strippedCourseTitle = stripPrefixes(courseTitle).toLowerCase();
     const learnerEmailLower = learnerEmail.trim().toLowerCase();
 
@@ -585,6 +591,7 @@ export async function removeDaLearnerFromCalendar(
               }
             } catch (patchErr) {
               console.error(`❌ [da-calendar-sync] Failed to remove ${learnerEmail} on ${targetDate}:`, patchErr);
+              if (options.throwOnError) throw patchErr;
             }
           }
         }
@@ -594,6 +601,7 @@ export async function removeDaLearnerFromCalendar(
     return result;
   } catch (error) {
     console.error(`❌ [da-calendar-sync] Fatal error removing from calendar:`, error);
+    if (options.throwOnError) throw error;
     return result;
   }
 }

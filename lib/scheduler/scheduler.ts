@@ -122,7 +122,7 @@ async function seedDefaults() {
         {
             id: DA_AUTOMATION_TASK,
             name: 'Fetch & Enrol Direct Applications',
-            description: 'Fetch confirmed upcoming Instant Confirm applications and enrol them automatically at 9 AM, noon, 3 PM and 6 PM Singapore time. Report available on Retrieve Direct Application.',
+            description: 'Sync new and updated Direct Applications since the last successful pull, with a one-day overlap and weekly 180-day recovery scan. Reconcile TPG cancellations for existing applications, including past classes. Auto-enrol confirmed upcoming applications at 9 AM, noon, 3 PM and 6 PM SGT. Report available on Retrieve Direct Application.',
             cron_expression: DA_AUTOMATION_CRON,
             api_endpoint: '/api/external/auto-retrieve-enrol-direct-applications',
             // Opt in per tenant; never silently enrol another tenant’s learners.

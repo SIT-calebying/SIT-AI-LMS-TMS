@@ -5716,6 +5716,27 @@ CREATE TABLE IF NOT EXISTS public.da_automation_run (
 );
 CREATE INDEX IF NOT EXISTS da_automation_run_started_idx ON public.da_automation_run (started_at DESC);
 
+-- Incremental Direct Application source sync and durable cancellation retries.
+CREATE TABLE IF NOT EXISTS public.da_application_sync_state (
+    task_id text PRIMARY KEY,
+    last_successful_fetch_at timestamp with time zone,
+    last_recovery_at timestamp with time zone
+);
+CREATE TABLE IF NOT EXISTS public.da_application_source_sync (
+    application_id text PRIMARY KEY,
+    source_fingerprint text NOT NULL,
+    source_modified_on text,
+    cancellation_pending boolean NOT NULL DEFAULT false,
+    cancellation_error text,
+    synced_at timestamp with time zone NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS da_source_cancellation_pending_idx
+    ON public.da_application_source_sync (application_id) WHERE cancellation_pending;
+ALTER TABLE public.da_automation_run ADD COLUMN IF NOT EXISTS unchanged integer NOT NULL DEFAULT 0;
+ALTER TABLE public.da_automation_run ADD COLUMN IF NOT EXISTS cancelled integer NOT NULL DEFAULT 0;
+ALTER TABLE public.da_automation_run ADD COLUMN IF NOT EXISTS recovery boolean NOT NULL DEFAULT false;
+ALTER TABLE public.da_automation_run ADD COLUMN IF NOT EXISTS last_update_date date;
+
 -- PostgreSQL database dump complete
 --
 
