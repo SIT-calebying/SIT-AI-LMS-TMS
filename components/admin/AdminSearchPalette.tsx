@@ -77,6 +77,7 @@ const ADMIN_ITEMS: AdminItem[] = [
   { id: AdminPage.SendCertificateGH, page: AdminPage.SendCertificateGH, label: 'Send Certificate (GH)', section: 'Certificates' },
 
   { id: AdminPage.SupportTickets, page: AdminPage.SupportTickets, label: 'View All Tickets', section: 'Support' },
+  { id: AdminPage.SigninRequests, page: AdminPage.SigninRequests, label: 'Sign-in Requests', section: 'Support' },
 ];
 
 interface AdminSearchPaletteProps {

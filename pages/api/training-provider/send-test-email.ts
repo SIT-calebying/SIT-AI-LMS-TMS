@@ -4,6 +4,8 @@ import { google } from 'googleapis';
 import pool from '@lib/db';
 import { getTrainingPartnerIdentifiers } from '@lib/trainingPartnerIdentifiers';
 import { renderInvitationHtmlEmail, renderInvitationTemplate, parseCcList } from '@lib/trainerInvitations';
+import { passwordSectionHtml } from '@lib/learner/welcomeSigninEmailTemplate';
+import { loginUrlFrom } from '@lib/learner/selfEnrolment';
 
 /**
  * POST /api/training-provider/send-test-email
@@ -13,7 +15,7 @@ import { renderInvitationHtmlEmail, renderInvitationTemplate, parseCcList } from
  *
  * templateType: 'certificate' | 'course-confirmation' | 'final-course-confirmation' |
  *               'otp' | 'feedback' | 'password-reset' | 'trainer-invitation' |
- *               'courseware-attendance' | 'proforma-invoice'
+ *               'courseware-attendance' | 'proforma-invoice' | 'welcome-signin'
  */
 
 // Sample data per template type for variable replacement
@@ -63,6 +65,15 @@ const SAMPLE_DATA: Record<string, Record<string, string>> = {
   'courseware-attendance': {
     '{COURSE_NAME}': 'WSQ - Tax Computations for Individuals and Organizations',
     '{DIGITAL_ATTENDANCE_ID}': 'RA572084',
+  },
+  'welcome-signin': {
+    '{LEARNER_NAME}': 'John Doe',
+    '{LEARNER_EMAIL}': 'john@example.com',
+    '{COURSE_NAME}': 'WSQ - Generative AI for Business',
+    '{COURSE_RUN_ID}': '1131876',
+    '{COURSE_START_DATE}': '14 Apr 2026',
+    '{PASSWORD_SECTION}': passwordSectionHtml('Xk7#mP2q-Rt9vW'),
+    '{TEMP_PASSWORD}': 'Xk7#mP2q-Rt9vW',
   },
   'proforma-invoice': {
     '{PARTICIPANT_NAME}': 'John Tan',
@@ -117,6 +128,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
       '{COMPANY_NAME}': companyName,
       '{COMPANY_SHORT_NAME}': companyShortName,
       '{COMPANY_WEBSITE}': companyWebsite,
+      '{LOGIN_URL}': loginUrlFrom(req.headers.host, typeof req.headers['x-forwarded-proto'] === 'string' ? req.headers['x-forwarded-proto'].split(',')[0].trim() : undefined),
     };
 
     // Replace all variables
