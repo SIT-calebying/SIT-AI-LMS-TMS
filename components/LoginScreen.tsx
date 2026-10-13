@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { UserRole } from '@app-types';
 import { Button } from './ui/Button';
-import { Card } from './ui/Card';
 import { authService, LoginCredentials, User } from '@lib/services/authService';
 import { useLms } from '@contexts/LmsContext';
 import { trainingProviderService, TrainingProviderData } from '@lib/services/trainingProviderService';
@@ -425,7 +424,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
 
 
 
-  const inputClasses = "block w-full px-4 py-3 text-gray-900 bg-white border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-500";
+  const inputClasses = "block w-full px-4 py-3 text-gray-900 bg-white border border-gray-300 rounded-xl shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-[#0d1424] dark:border-gray-700 dark:text-white dark:placeholder-gray-500";
 
   const renderEmailStep = () => (
     <form onSubmit={handleSendOtp} className="space-y-6">
@@ -834,19 +833,29 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   };
 
   const providerName = isLoadingProviderData ? '...' : (trainingProviderData?.companyShortname || trainingProviderData?.companyName);
+  const showSignInHeading = step === 'email' || step === 'password';
+  const signInSubtitle = step === 'email'
+    ? "Enter the email you registered with and we'll send you a one-time code — no password needed."
+    : 'Enter your email and password to sign in.';
 
   return (
     <div className="flex flex-col lg:flex-row min-h-screen">
       {/* Left: branding panel */}
-      <div className="lg:w-1/2 bg-gradient-to-br from-[#0f1f3d] via-[#1a3a69] to-[#1d4380] text-white px-6 py-10 sm:px-12 lg:px-16 lg:py-14 flex flex-col">
-        <div className="flex items-center gap-4">
+      <div className="relative overflow-hidden lg:w-1/2 bg-gradient-to-br from-[#0f1c3f] via-[#13265a] to-[#1b3a7a] text-white px-6 py-10 sm:px-12 lg:px-14 lg:py-14 flex flex-col">
+        <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full text-sky-300/20" viewBox="0 0 800 900" preserveAspectRatio="xMidYMid slice" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <circle cx="760" cy="120" r="520" />
+          <circle cx="40" cy="1000" r="560" />
+          <circle cx="700" cy="760" r="300" />
+        </svg>
+
+        <div className="relative flex items-center gap-4">
           {isLoadingProviderData ? (
-            <div className="w-14 h-14 bg-white/20 rounded-lg animate-pulse"></div>
+            <div className="w-14 h-14 bg-white/20 rounded-xl animate-pulse"></div>
           ) : (
             <img
               src={trainingProviderData?.companyLogoUrl}
               alt="Company Logo"
-              className="w-14 h-14 rounded-lg bg-white p-0.5 object-contain"
+              className="w-14 h-14 rounded-xl bg-white p-0.5 object-contain shadow-lg"
               onError={() => {
                 console.error('❌ LoginScreen: Failed to load company logo:', trainingProviderData?.companyLogoUrl);
               }}
@@ -855,49 +864,55 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
           <h1 className="text-2xl sm:text-3xl font-bold">{providerName}</h1>
         </div>
 
-        <div className="mt-10 lg:mt-auto lg:mb-auto max-w-xl">
+        <div className="relative mt-12 lg:mt-14 max-w-xl">
           <p className="text-xs font-semibold tracking-[0.2em] text-sky-300 uppercase">Training Management System</p>
-          <h2 className="mt-3 text-3xl sm:text-4xl font-bold leading-tight">Manage your WSQ training, end to end.</h2>
-          <p className="mt-4 text-base text-blue-100/90 leading-relaxed">
-            Course runs, schedules, attendance, assessments and certificates for WSQ courses, all in one place.
+          <p className="mt-4 text-lg text-blue-100/90 leading-relaxed">
+            Your class materials, schedules, e-attendance, assessment and certificates, all in one place.
+            Not able to login here? Register with the Course Run ID from your course administrator.
           </p>
           <span className="mt-6 inline-flex items-center rounded-full border border-sky-300/40 bg-white/10 px-4 py-1.5 text-sm font-medium text-sky-100">
             For WSQ courses
           </span>
         </div>
 
-        <div className="mt-10 text-xs text-blue-100/80">
-          {trainingProviderProfile?.companyWebsite && (
-            <p>
-              Browse our WSQ courses at{' '}
-              <a href={trainingProviderProfile.companyWebsite} target="_blank" rel="noopener noreferrer" className="text-sky-300 hover:underline">
-                {trainingProviderProfile.companyWebsite}
-              </a>
-            </p>
-          )}
-          <p className="powered-by mt-2">
-            Powered by{' '}
-            <a href="https://www.tertiaryinfotech.com/" target="_blank" rel="noopener noreferrer" className="hover:underline">
-              Tertiary Infotech Academy Pte Ltd
-            </a>
-          </p>
-        </div>
+        <p className="powered-by relative mt-10 lg:mt-auto text-xs text-blue-100/80">
+          Powered by{' '}
+          <a href="https://www.tertiaryinfotech.com/" target="_blank" rel="noopener noreferrer" className="hover:underline">
+            Tertiary Infotech Academy Pte Ltd
+          </a>
+        </p>
       </div>
 
-      {/* Right: sign-in panel */}
-      <div className="lg:w-1/2 flex items-center justify-center bg-gray-100 dark:bg-gray-950 px-4 py-10">
+      {/* Right: sign-in panel (always dark, like the course-registration login) */}
+      <div className="dark lg:w-1/2 flex items-center justify-center bg-[#0b1120] text-gray-100 px-6 py-12 sm:px-12">
         <div className={`w-full ${step === 'roleSelect' ? 'max-w-lg' : 'max-w-md'}`}>
-          <Card className="!p-8 sm:!p-10 !shadow-2xl dark:bg-gray-800 dark:border-gray-700">
-            {renderCurrentStep()}
-
-            <div className="mt-8 text-center text-xs text-gray-500 dark:text-gray-400">
-              <div className="flex justify-center space-x-4">
-                <button onClick={() => setShowPrivacyPolicy(true)} className="hover:underline cursor-pointer">Privacy Policy</button>
-                <button onClick={() => setShowAcceptableUsePolicy(true)} className="hover:underline cursor-pointer">Acceptable Use Policy</button>
-                <button onClick={() => { setShowFeedback(true); setFeedbackStatus(null); setFeedbackForm({ name: '', email: '', tel: '', message: '' }); }} className="hover:underline cursor-pointer">Feedback</button>
-              </div>
+          {showSignInHeading && (
+            <div className="mb-8">
+              <p className="text-xs font-semibold tracking-[0.2em] text-blue-400 uppercase">Welcome back</p>
+              <h2 className="mt-2 text-3xl font-bold text-white">Sign in to the TMS</h2>
+              <p className="mt-3 text-gray-400">{signInSubtitle}</p>
             </div>
-          </Card>
+          )}
+
+          {renderCurrentStep()}
+
+          <div className="mt-10 pt-6 border-t border-gray-800 text-center text-xs text-gray-500">
+            {showSignInHeading && (
+              <p className="mb-2">Same email as your course-registration account.</p>
+            )}
+            {trainingProviderProfile?.companyWebsite && (
+              <p className="mb-4">
+                <a href={trainingProviderProfile.companyWebsite} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">
+                  {trainingProviderProfile.companyWebsite}
+                </a>
+              </p>
+            )}
+            <div className="flex justify-center space-x-4">
+              <button onClick={() => setShowPrivacyPolicy(true)} className="hover:underline cursor-pointer">Privacy Policy</button>
+              <button onClick={() => setShowAcceptableUsePolicy(true)} className="hover:underline cursor-pointer">Acceptable Use Policy</button>
+              <button onClick={() => { setShowFeedback(true); setFeedbackStatus(null); setFeedbackForm({ name: '', email: '', tel: '', message: '' }); }} className="hover:underline cursor-pointer">Feedback</button>
+            </div>
+          </div>
         </div>
       </div>
 
