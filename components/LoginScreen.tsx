@@ -62,6 +62,10 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   const [feedbackForm, setFeedbackForm] = useState({ name: '', email: '', tel: '', message: '' });
   const [feedbackStatus, setFeedbackStatus] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [isSendingFeedback, setIsSendingFeedback] = useState(false);
+  const [registerForm, setRegisterForm] = useState({ fullName: '', email: '', courseRunId: '' });
+  const [registerStatus, setRegisterStatus] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [logoFailed, setLogoFailed] = useState(false);
   const [forgotPasswordEmail, setForgotPasswordEmail] = useState('');
   const [forgotPasswordSent, setForgotPasswordSent] = useState(false);
 
@@ -376,6 +380,39 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
       setError('An unexpected error occurred.');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleSelfRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsRegistering(true);
+    setRegisterStatus(null);
+    try {
+      const response = await fetch('/api/auth/self-register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(registerForm),
+      });
+      const data = await response.json();
+      if (!data.success) {
+        setRegisterStatus({ type: 'error', text: data.error || 'Registration failed. Please try again.' });
+        return;
+      }
+      const dates = data.startDate
+        ? ` (${new Date(data.startDate).toLocaleDateString('en-SG', { day: 'numeric', month: 'short', year: 'numeric' })})`
+        : '';
+      setRegisterStatus({
+        type: 'success',
+        text: `${data.alreadyEnrolled ? 'You are already enrolled in' : 'You are now enrolled in'} ${data.courseTitle}${dates}. Sign in with ${registerForm.email.trim().toLowerCase()} to see your class.`,
+      });
+      // Hand the email over to the sign-in form so the learner can request their OTP straight away.
+      setEmail(registerForm.email.trim().toLowerCase());
+      setStep(securitySettings.enableOtpLogin ? 'email' : 'password');
+      setError(null);
+    } catch {
+      setRegisterStatus({ type: 'error', text: 'Registration failed. Please try again.' });
+    } finally {
+      setIsRegistering(false);
     }
   };
 
@@ -851,28 +888,102 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
         <div className="relative flex items-center gap-4">
           {isLoadingProviderData ? (
             <div className="w-14 h-14 bg-white/20 rounded-xl animate-pulse"></div>
-          ) : (
+          ) : trainingProviderData?.companyLogoUrl && !logoFailed ? (
             <img
-              src={trainingProviderData?.companyLogoUrl}
+              src={trainingProviderData.companyLogoUrl}
               alt="Company Logo"
               className="w-14 h-14 rounded-xl bg-white p-0.5 object-contain shadow-lg"
               onError={() => {
                 console.error('❌ LoginScreen: Failed to load company logo:', trainingProviderData?.companyLogoUrl);
+                setLogoFailed(true);
               }}
             />
-          )}
+          ) : null}
           <h1 className="text-2xl sm:text-3xl font-bold">{providerName}</h1>
         </div>
 
-        <div className="relative mt-12 lg:mt-14 max-w-xl">
-          <p className="text-xs font-semibold tracking-[0.2em] text-sky-300 uppercase">Training Management System</p>
-          <p className="mt-4 text-lg text-blue-100/90 leading-relaxed">
+        <div className="relative mt-10 lg:mt-12 max-w-xl">
+          <div className="flex flex-wrap items-center gap-3">
+            <p className="text-xs font-semibold tracking-[0.2em] text-sky-300 uppercase">Training Management System</p>
+            <span className="inline-flex items-center rounded-full border border-sky-300/40 bg-white/10 px-3 py-0.5 text-xs font-medium text-sky-100">
+              For WSQ courses
+            </span>
+          </div>
+          <p className="mt-4 text-base sm:text-lg text-blue-100/90 leading-relaxed">
             Your class materials, schedules, e-attendance, assessment and certificates, all in one place.
-            Not able to login here? Register with the Course Run ID from your course administrator.
+            Not able to get your OTP, or can&apos;t see your class after signing in? Fill in the form below with the
+            Course Run ID from your course administrator or trainer, and we&apos;ll enrol you into your class.
           </p>
-          <span className="mt-6 inline-flex items-center rounded-full border border-sky-300/40 bg-white/10 px-4 py-1.5 text-sm font-medium text-sky-100">
-            For WSQ courses
-          </span>
+        </div>
+
+        {/* Learner self-registration: enrols the learner into the class by Course Run ID */}
+        <div className="relative mt-8 max-w-xl rounded-2xl border border-white/10 bg-white/[0.06] p-6 sm:p-8 shadow-2xl backdrop-blur-sm">
+          <h2 className="text-lg font-semibold">New learner registration</h2>
+          <p className="mt-1 text-sm text-blue-100/70">
+            Already registered?{' '}
+            <a href="#signin" className="font-semibold text-sky-300 hover:underline">Sign in here</a>.
+          </p>
+
+          <form onSubmit={handleSelfRegister} className="mt-5 space-y-4">
+            <div>
+              <label htmlFor="reg-name" className="block text-sm font-medium text-blue-50 mb-1">Name</label>
+              <input
+                id="reg-name"
+                type="text"
+                autoComplete="name"
+                required
+                maxLength={120}
+                value={registerForm.fullName}
+                onChange={(e) => setRegisterForm(prev => ({ ...prev, fullName: e.target.value }))}
+                placeholder="As shown on your NRIC / passport"
+                className="block w-full rounded-xl border border-white/15 bg-[#0d1733]/70 px-4 py-3 text-white placeholder-blue-200/40 focus:outline-none focus:ring-2 focus:ring-sky-400"
+              />
+            </div>
+            <div>
+              <label htmlFor="reg-email" className="block text-sm font-medium text-blue-50 mb-1">Email</label>
+              <input
+                id="reg-email"
+                type="email"
+                autoComplete="email"
+                required
+                value={registerForm.email}
+                onChange={(e) => setRegisterForm(prev => ({ ...prev, email: e.target.value }))}
+                placeholder="you@example.com"
+                className="block w-full rounded-xl border border-white/15 bg-[#0d1733]/70 px-4 py-3 text-white placeholder-blue-200/40 focus:outline-none focus:ring-2 focus:ring-sky-400"
+              />
+            </div>
+            <div>
+              <label htmlFor="reg-run" className="block text-sm font-medium text-blue-50 mb-1">Course Run ID</label>
+              <input
+                id="reg-run"
+                type="text"
+                required
+                maxLength={100}
+                value={registerForm.courseRunId}
+                onChange={(e) => setRegisterForm(prev => ({ ...prev, courseRunId: e.target.value.trim() }))}
+                placeholder="e.g. 1234567"
+                className="block w-full rounded-xl border border-white/15 bg-[#0d1733]/70 px-4 py-3 font-mono tracking-wider text-white placeholder-blue-200/40 focus:outline-none focus:ring-2 focus:ring-sky-400"
+              />
+              <p className="mt-1.5 text-xs text-blue-100/60">Your Course Run ID is provided by your course administrator or trainer.</p>
+            </div>
+
+            {registerStatus && (
+              <p
+                role="status"
+                className={`rounded-lg px-3 py-2 text-sm ${registerStatus.type === 'success' ? 'bg-emerald-500/15 text-emerald-200' : 'bg-red-500/15 text-red-200'}`}
+              >
+                {registerStatus.text}
+              </p>
+            )}
+
+            <button
+              type="submit"
+              disabled={isRegistering}
+              className="w-full rounded-xl bg-blue-600 py-3 font-semibold text-white hover:bg-blue-500 disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {isRegistering ? 'Registering...' : 'Register'}
+            </button>
+          </form>
         </div>
 
         <p className="powered-by relative mt-10 lg:mt-auto text-xs text-blue-100/80">
@@ -884,7 +995,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
       </div>
 
       {/* Right: sign-in panel (always dark, like the course-registration login) */}
-      <div className="dark lg:w-1/2 flex items-center justify-center bg-[#0b1120] text-gray-100 px-6 py-12 sm:px-12">
+      <div id="signin" className="dark lg:w-1/2 flex items-center justify-center bg-[#0b1120] text-gray-100 px-6 py-12 sm:px-12">
         <div className={`w-full ${step === 'roleSelect' ? 'max-w-lg' : 'max-w-md'}`}>
           {showSignInHeading && (
             <div className="mb-8">

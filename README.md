@@ -322,6 +322,7 @@ POST /api/external/create-course-run      # BROKEN (27 Aug 2026) — SSG rejects
 ```
 POST /api/auth/login              # Login (password or OTP) → returns a session token
 POST /api/auth/send-otp           # Send OTP to email
+POST /api/auth/self-register      # Public: learner self-enrols with Name, Email + Course Run ID
 GET  /api/auth/verify             # Validate the current session token
 POST /api/auth/logout             # Revoke the current session token
 PUT  /api/auth/update-password    # Update password (own account, or admin for any)
@@ -450,7 +451,7 @@ ai-lms-tms/
 │   ├── ssg/                    # SSG API integration views
 │   ├── ui/                     # Reusable UI components
 │   ├── common/                 # Shared components
-│   ├── LoginScreen.tsx         # Two-column login (branding panel + sign-in steps)
+│   ├── LoginScreen.tsx         # Two-column login: learner self-registration + sign-in steps
 │   ├── AiChatbot.tsx           # Floating WhatsApp/Telegram chat launcher + template picker
 │   ├── chatTemplates.ts        # 44 TMS request templates for the chat launcher
 │   ├── CourseDetail.tsx         # Course detail view
