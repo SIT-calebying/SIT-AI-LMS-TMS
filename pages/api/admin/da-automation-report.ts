@@ -12,7 +12,9 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
     await ensureDaAutomationTable();
     const [config, runs, attention, recovery] = await Promise.all([
       pool.query('SELECT enabled, cron_expression FROM scheduler_config WHERE id = $1', [DA_AUTOMATION_TASK]),
-      pool.query('SELECT * FROM da_automation_run ORDER BY started_at DESC LIMIT 5'),
+      // DATE is a calendar boundary, not an instant. Prevent pg/JSON timezone
+      // conversion from displaying the previous day on Singapore servers.
+      pool.query('SELECT *, last_update_date::text AS last_update_date FROM da_automation_run ORDER BY started_at DESC LIMIT 5'),
       pool.query(`SELECT da.application_id, da.auto_enrol_status,
           COALESCE(s.cancellation_error, da.auto_enrol_error) AS auto_enrol_error, COUNT(*) OVER()::int AS total
         FROM da_application da LEFT JOIN da_application_source_sync s USING (application_id)
@@ -21,7 +23,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
           OR NULLIF(TRIM(auto_enrol_error), '') IS NOT NULL
           OR (auto_enrol_status = 'pending' AND updated_at < NOW() - INTERVAL '30 minutes'))))
         ORDER BY da.updated_at DESC LIMIT 10`, [directApplicationSyncWindow({}).tomorrow]),
-      pool.query('SELECT * FROM da_automation_run WHERE recovery ORDER BY started_at DESC LIMIT 1'),
+      pool.query('SELECT *, last_update_date::text AS last_update_date FROM da_automation_run WHERE recovery ORDER BY started_at DESC LIMIT 1'),
     ]);
     const runtimeEnabled = process.env.ENABLE_APP_SCHEDULER === 'true'
       || (process.env.NODE_ENV === 'production' && process.env.ENABLE_APP_SCHEDULER !== 'false');
