@@ -450,7 +450,7 @@ ai-lms-tms/
 │   ├── ssg/                    # SSG API integration views
 │   ├── ui/                     # Reusable UI components
 │   ├── common/                 # Shared components
-│   ├── LoginScreen.tsx         # Authentication screen
+│   ├── LoginScreen.tsx         # Two-column login (branding panel + sign-in steps)
 │   ├── AiChatbot.tsx           # Floating WhatsApp/Telegram chat launcher + template picker
 │   ├── chatTemplates.ts        # 44 TMS request templates for the chat launcher
 │   ├── CourseDetail.tsx         # Course detail view

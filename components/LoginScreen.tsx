@@ -833,54 +833,72 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
     }
   };
 
+  const providerName = isLoadingProviderData ? '...' : (trainingProviderData?.companyShortname || trainingProviderData?.companyName);
+
   return (
-    <div className="flex items-center justify-center min-h-screen bg-[#1a3a69] dark:bg-gray-900">
-      <div className={`w-full px-4 ${step === 'roleSelect' ? 'max-w-lg' : 'max-w-md'}`}>
-        <Card className="!p-8 sm:!p-10 !shadow-2xl dark:bg-gray-800 dark:border-gray-700">
-          <div className="flex flex-col items-center text-center mb-8">
-            {/* Only show logo and company name when data is loaded */}
-            {isLoadingProviderData ? (
-              <div className="w-20 h-20 bg-gray-200 rounded-md mb-4 animate-pulse dark:bg-gray-700"></div>
-            ) : (
-              <img
-                src={trainingProviderData?.companyLogoUrl}
-                alt="Company Logo"
-                className="w-20 h-20 rounded-md mb-4"
-                onError={(e) => {
-                  console.error('❌ LoginScreen: Failed to load company logo:', trainingProviderData?.companyLogoUrl);
-                }}
-              />
-            )}
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-              {isLoadingProviderData ? '...' : (trainingProviderData?.companyShortname || trainingProviderData?.companyName)}
-            </h1>
-            <p className="text-gray-600 mt-2 dark:text-gray-400">LMS cum TMS for WSQ Courses</p>
-          </div>
+    <div className="flex flex-col lg:flex-row min-h-screen">
+      {/* Left: branding panel */}
+      <div className="lg:w-1/2 bg-gradient-to-br from-[#0f1f3d] via-[#1a3a69] to-[#1d4380] text-white px-6 py-10 sm:px-12 lg:px-16 lg:py-14 flex flex-col">
+        <div className="flex items-center gap-4">
+          {isLoadingProviderData ? (
+            <div className="w-14 h-14 bg-white/20 rounded-lg animate-pulse"></div>
+          ) : (
+            <img
+              src={trainingProviderData?.companyLogoUrl}
+              alt="Company Logo"
+              className="w-14 h-14 rounded-lg bg-white p-0.5 object-contain"
+              onError={() => {
+                console.error('❌ LoginScreen: Failed to load company logo:', trainingProviderData?.companyLogoUrl);
+              }}
+            />
+          )}
+          <h1 className="text-2xl sm:text-3xl font-bold">{providerName}</h1>
+        </div>
 
-          {renderCurrentStep()}
+        <div className="mt-10 lg:mt-auto lg:mb-auto max-w-xl">
+          <p className="text-xs font-semibold tracking-[0.2em] text-sky-300 uppercase">Training Management System</p>
+          <h2 className="mt-3 text-3xl sm:text-4xl font-bold leading-tight">Manage your WSQ training, end to end.</h2>
+          <p className="mt-4 text-base text-blue-100/90 leading-relaxed">
+            Course runs, schedules, attendance, assessments and certificates for WSQ courses, all in one place.
+          </p>
+          <span className="mt-6 inline-flex items-center rounded-full border border-sky-300/40 bg-white/10 px-4 py-1.5 text-sm font-medium text-sky-100">
+            For WSQ courses
+          </span>
+        </div>
 
-          <div className="mt-8 text-center text-xs text-gray-500 dark:text-gray-400">
-            <div className="flex justify-center space-x-4">
-              <button onClick={() => setShowPrivacyPolicy(true)} className="hover:underline cursor-pointer">Privacy Policy</button>
-              <button onClick={() => setShowAcceptableUsePolicy(true)} className="hover:underline cursor-pointer">Acceptable Use Policy</button>
-              <button onClick={() => { setShowFeedback(true); setFeedbackStatus(null); setFeedbackForm({ name: '', email: '', tel: '', message: '' }); }} className="hover:underline cursor-pointer">Feedback</button>
-            </div>
-            {trainingProviderProfile?.companyWebsite && (
-              <p className="mt-3">
-                Browse our WSQ courses at{' '}
-                <a href={trainingProviderProfile.companyWebsite} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">
-                  {trainingProviderProfile.companyWebsite}
-                </a>
-              </p>
-            )}
-            <p className="powered-by mt-3">
-              Powered by{' '}
-              <a href="https://www.tertiaryinfotech.com/" target="_blank" rel="noopener noreferrer" className="hover:underline">
-                Tertiary Infotech Academy Pte Ltd
+        <div className="mt-10 text-xs text-blue-100/80">
+          {trainingProviderProfile?.companyWebsite && (
+            <p>
+              Browse our WSQ courses at{' '}
+              <a href={trainingProviderProfile.companyWebsite} target="_blank" rel="noopener noreferrer" className="text-sky-300 hover:underline">
+                {trainingProviderProfile.companyWebsite}
               </a>
             </p>
-          </div>
-        </Card>
+          )}
+          <p className="powered-by mt-2">
+            Powered by{' '}
+            <a href="https://www.tertiaryinfotech.com/" target="_blank" rel="noopener noreferrer" className="hover:underline">
+              Tertiary Infotech Academy Pte Ltd
+            </a>
+          </p>
+        </div>
+      </div>
+
+      {/* Right: sign-in panel */}
+      <div className="lg:w-1/2 flex items-center justify-center bg-gray-100 dark:bg-gray-950 px-4 py-10">
+        <div className={`w-full ${step === 'roleSelect' ? 'max-w-lg' : 'max-w-md'}`}>
+          <Card className="!p-8 sm:!p-10 !shadow-2xl dark:bg-gray-800 dark:border-gray-700">
+            {renderCurrentStep()}
+
+            <div className="mt-8 text-center text-xs text-gray-500 dark:text-gray-400">
+              <div className="flex justify-center space-x-4">
+                <button onClick={() => setShowPrivacyPolicy(true)} className="hover:underline cursor-pointer">Privacy Policy</button>
+                <button onClick={() => setShowAcceptableUsePolicy(true)} className="hover:underline cursor-pointer">Acceptable Use Policy</button>
+                <button onClick={() => { setShowFeedback(true); setFeedbackStatus(null); setFeedbackForm({ name: '', email: '', tel: '', message: '' }); }} className="hover:underline cursor-pointer">Feedback</button>
+              </div>
+            </div>
+          </Card>
+        </div>
       </div>
 
       {/* Privacy Policy Modal */}
