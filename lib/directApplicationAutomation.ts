@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import pool from './db';
 import { withDaLock } from './daAutomationLock';
 import { ensureDaAutomationTable } from './directApplicationAutomationSchema';
-import { applicationsToSync, directApplicationFingerprint, directApplicationSyncWindow } from './directApplicationSync';
+import { applicationsToSync, directApplicationFingerprint, directApplicationSyncWindow, directApplicationRecoveryDue, type DirectApplicationSyncMode } from './directApplicationSync';
 import { reconcileDirectApplicationCancellation } from './directApplicationCancellation';
 import type { DaPipelineResult } from './autoEnrolDirectApplications';
 
@@ -16,7 +16,7 @@ export interface DaAutomationRun {
   unchanged: number; cancelled: number; recovery: boolean; last_update_date: string;
 }
 interface Dependencies {
-  retrieve: (filters: { lastUpdateDate: string }) => Promise<{ rows: Record<string, unknown>[] }>;
+  retrieve: (filters: { lastUpdateDate: string }) => Promise<{ rows: Record<string, unknown>[]; complete?: boolean; warnings?: string[] }>;
   importRows: (rows: Record<string, unknown>[]) => Promise<{
     inserted: number; updated: number; errors: { row: number; error: string; application_id?: string }[];
   }>;
@@ -26,7 +26,9 @@ interface Dependencies {
 }
 
 /** Await and report import, cancellation reconciliation and enrolment outcomes. */
-export async function runDirectApplicationAutomation(overrides?: Dependencies): Promise<DaAutomationRun | null> {
+export async function runDirectApplicationAutomation(
+  overrides?: Dependencies, options: { mode?: DirectApplicationSyncMode; onStarted?: (report: DaAutomationRun) => void } = {},
+): Promise<DaAutomationRun | null> {
   await ensureDaAutomationTable();
   const dependencies: Dependencies = overrides ?? {
     retrieve: async filters => (await import('../pages/api/admin/retrieve-da-applications'))
@@ -42,24 +44,27 @@ export async function runDirectApplicationAutomation(overrides?: Dependencies): 
     [JSON.stringify([{ step: 'interrupted', message: 'Previous process stopped before reporting completion; unfinished applications will be retried.' }])]);
     const fetchStarted = dependencies.now?.() ?? new Date();
     const state = await pool.query('SELECT * FROM da_application_sync_state WHERE task_id = $1', [DA_AUTOMATION_TASK]);
-    const window = directApplicationSyncWindow(state.rows[0] || {}, fetchStarted);
+    const window = directApplicationSyncWindow(state.rows[0] || {}, fetchStarted, options.mode);
     const report: DaAutomationRun = { id: randomUUID(), status: 'running', fetched: 0, imported: 0,
       attempted: 0, enrolled: 0, already_enrolled: 0, deferred: 0, error_count: 0, errors: [],
       unchanged: 0, cancelled: 0, recovery: window.recovery, last_update_date: window.lastUpdateDate };
     await pool.query(`INSERT INTO da_automation_run (id, status, recovery, last_update_date)
       VALUES ($1, 'running', $2, $3)`, [report.id, report.recovery, report.last_update_date]);
+    options.onStarted?.(report);
     let step = 'fetch';
     try {
-      // All statuses, all course dates. Eligibility is applied when enrolling,
-      // rather than hiding updates/cancellations of existing applications.
-      const { rows: fetchedRows } = await dependencies.retrieve({ lastUpdateDate: window.lastUpdateDate });
+      // All statuses for classes starting tomorrow onward. Existing applications
+      // receive their updates/cancellations within the same registration scope.
+      const { rows: fetchedRows, complete = true, warnings = [] } = await dependencies.retrieve({ lastUpdateDate: window.lastUpdateDate });
+      for (const message of warnings) report.errors.push({ step: 'fetch', message });
+      if (!complete && !warnings.length) report.errors.push({ step: 'fetch', message: 'Incomplete TPGateway retrieval; sync cursor retained for retry.' });
       const fetchedIds = [...new Set(fetchedRows.map(row => String(row['Application ID'] || '').trim()).filter(Boolean))];
       const previous = await pool.query(`SELECT da.id, da.application_id, s.source_fingerprint
         FROM da_application da LEFT JOIN da_application_source_sync s USING (application_id)
         WHERE da.application_id = ANY($1::text[])`, [fetchedIds]);
       const previousById = new Map(previous.rows.map(row => [row.application_id, row]));
-      const rows = applicationsToSync(fetchedRows, new Set(previousById.keys()), window.today);
-      report.fetched = rows.length;
+      const rows = applicationsToSync(fetchedRows, new Set(previousById.keys()), window.tomorrow);
+      report.fetched = fetchedIds.length;
       step = 'import';
       let importComplete = true;
       const failedImports = new Set<string>();
@@ -102,19 +107,20 @@ export async function runDirectApplicationAutomation(overrides?: Dependencies): 
           }
         }
       }
-      if (importComplete) {
+      if (importComplete && complete) {
         // Save FETCH START, not completion: changes published during paging must
         // still be included next time. Cleanup/enrolment retries live separately.
         await pool.query(`INSERT INTO da_application_sync_state (task_id, last_successful_fetch_at, last_recovery_at)
-          VALUES ($1, $2, CASE WHEN $3 THEN $2::timestamptz ELSE NULL END)
-          ON CONFLICT (task_id) DO UPDATE SET last_successful_fetch_at = EXCLUDED.last_successful_fetch_at,
+          VALUES ($1, CASE WHEN NOT $3 THEN $2::timestamptz ELSE NULL END, CASE WHEN $3 THEN $2::timestamptz ELSE NULL END)
+          ON CONFLICT (task_id) DO UPDATE SET last_successful_fetch_at = COALESCE(EXCLUDED.last_successful_fetch_at, da_application_sync_state.last_successful_fetch_at),
             last_recovery_at = COALESCE(EXCLUDED.last_recovery_at, da_application_sync_state.last_recovery_at)`,
         [DA_AUTOMATION_TASK, fetchStarted.toISOString(), window.recovery]);
       }
 
       step = 'cancellation';
       const pending = await pool.query(`SELECT da.id, da.application_id FROM da_application da
-        JOIN da_application_source_sync s USING (application_id) WHERE s.cancellation_pending`);
+        JOIN da_application_source_sync s USING (application_id)
+        WHERE s.cancellation_pending AND da.course_start_date >= $1::date`, [window.tomorrow]);
       for (const row of pending.rows) {
         try {
           const result = await (dependencies.cancel ?? reconcileDirectApplicationCancellation)(row.id);
@@ -137,8 +143,10 @@ export async function runDirectApplicationAutomation(overrides?: Dependencies): 
         WHERE LOWER(TRIM(da.application_status)) LIKE 'confirmed%'
           AND da.course_start_date >= $1::date AND NOT s.cancellation_pending
           AND (NULLIF(TRIM(da.enrolment_id), '') IS NULL OR da.application_id = ANY($2::text[]))`,
-      [window.today, rows.map(row => String(row['Application ID']).trim())]);
-      const eligible = existing.rows.filter(row => !failedImports.has(row.application_id));
+      [window.tomorrow, rows.map(row => String(row['Application ID']).trim())]);
+      // A partial fetch cannot prove an unseen application is still confirmed.
+      const eligible = existing.rows.filter(row => !failedImports.has(row.application_id)
+        && (complete || fetchedIds.includes(row.application_id)));
       const candidates = eligible.filter(row => !String(row.enrolment_id || '').trim());
       report.already_enrolled = eligible.length - candidates.length;
       report.attempted = candidates.length;
@@ -166,5 +174,34 @@ export async function runDirectApplicationAutomation(overrides?: Dependencies): 
     [report.id, report.status, report.fetched, report.imported, report.attempted, report.enrolled,
       report.already_enrolled, report.deferred, report.error_count, JSON.stringify(report.errors), report.unchanged, report.cancelled]);
     return report;
+  });
+}
+
+/** Recovery never changes the recent-update cursor; failure remains due next evening. */
+export async function runScheduledDirectApplicationAutomation() {
+  const recent = await runDirectApplicationAutomation();
+  if (!recent) return null;
+  const now = new Date();
+  const hour = Number(now.toLocaleString('en-GB', { timeZone: 'Asia/Singapore', hour: '2-digit', hourCycle: 'h23' }));
+  const state = await pool.query('SELECT last_recovery_at FROM da_application_sync_state WHERE task_id = $1', [DA_AUTOMATION_TASK]);
+  const recovery = hour >= 18 && directApplicationRecoveryDue(state.rows[0] || {}, now)
+    ? await runDirectApplicationAutomation(undefined, { mode: 'recovery' }) : null;
+  return recovery?.error_count ? recovery : recent;
+}
+
+/** Return only after the job owns its lock and has a durable running report. */
+export function requestDirectApplicationAutomation(mode: DirectApplicationSyncMode): Promise<DaAutomationRun | null> {
+  return new Promise((resolve, reject) => {
+    let started = false;
+    void (async () => {
+      const recent = await runDirectApplicationAutomation(undefined, { onStarted: report => {
+        started = true; resolve(report);
+      } });
+      if (!recent) resolve(null);
+      if (recent && mode === 'recovery') await runDirectApplicationAutomation(undefined, { mode: 'recovery' });
+    })().catch(error => {
+      if (!started) reject(error);
+      else console.error('Manual Direct Application sync failed:', error);
+    });
   });
 }

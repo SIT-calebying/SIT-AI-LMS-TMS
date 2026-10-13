@@ -36,8 +36,8 @@ test('direct application automation (disposable Postgres; no live services)', { 
       VALUES ($1,$2,$3,$4,$5,$6)`, [id, row['Application ID'], row['Application Status'], row['Course Start Date'], enrolment, status]);
     return id;
   };
-  const run = async (deps: Parameters<typeof runDirectApplicationAutomation>[0]) => {
-    const report = await runDirectApplicationAutomation(deps);
+  const run = async (deps: Parameters<typeof runDirectApplicationAutomation>[0], options?: Parameters<typeof runDirectApplicationAutomation>[1]) => {
+    const report = await runDirectApplicationAutomation(deps, options);
     if (report) ownedReports.push(report.id);
     return report!;
   };
@@ -91,7 +91,7 @@ test('direct application automation (disposable Postgres; no live services)', { 
       const report = await run({ retrieve: async () => ({ rows: [makeRow('Cancelled'), makeRow('Confirm application'), makeRow('Confirmed', '2020-01-01'), makeRow('Confirmed', '')] }),
         importRows: async rows => { assert.equal(rows.length, 0); return noImport(); },
         process: async ids => { assert.equal(ids.length, 0); return []; } });
-      assert.equal(report.fetched, 0); assert.equal(report.status, 'completed');
+      assert.equal(report.fetched, 4); assert.equal(report.status, 'completed');
     });
     await t.test('fetch failures are audited and never start import/enrolment', async () => {
       const report = await run({ retrieve: async () => { throw new Error('TPG unavailable'); },
@@ -155,7 +155,7 @@ test('direct application automation (disposable Postgres; no live services)', { 
       const stored = await db.query('SELECT status,error_count FROM da_automation_run WHERE id=$1', [staleId]);
       assert.equal(stored.rows[0].status, 'interrupted'); assert.equal(stored.rows[0].error_count, 1);
     });
-    await t.test('source retrieval sends an incremental date and returns past-run cancellations; manual preview stays upcoming', async () => {
+    await t.test('source sync and manual preview enforce tomorrow onward, including existing cancellations', async () => {
       const { retrieveDirectApplications } = await import('../pages/api/admin/retrieve-da-applications');
       const row = makeRow('Confirmed', '2020-01-01'); await insert(row, 'ENR-PAST');
       const calls: any[] = [];
@@ -164,17 +164,26 @@ test('direct application automation (disposable Postgres; no live services)', { 
         partner: async () => ({ uen: 'TEST-UEN', code: 'TEST-UEN-01' } as any),
         api: (() => ({ retrieveTrainingProviderCourseApplications: async (filter: any) => {
           calls.push(filter);
-          return { meta: { total: 1 }, data: { courseApplications: [{ applicationId: row['Application ID'],
-            applicationStatus: 'Cancelled', modifiedOn: '2026-10-12T08:00:00+08:00', run: { current: { startDate: '20200101' } } }] } };
+          const { directApplicationSyncWindow } = await import('../lib/directApplicationSync');
+          const window = directApplicationSyncWindow({});
+          return { meta: { total: 3 }, data: { courseApplications: [
+            { applicationId: row['Application ID'], applicationStatus: 'Cancelled', modifiedOn: '2026-10-12T08:00:00+08:00', run: { current: { startDate: '20200101' } } },
+            { applicationId: 'TODAY-TEST', applicationStatus: 'Confirmed', run: { current: { startDate: window.today.replace(/-/g, '') } } },
+            { applicationId: 'TOMORROW-TEST', applicationStatus: 'Cancelled', modifiedOn: '2026-10-12T08:00:00+08:00', run: { current: { startDate: window.tomorrow.replace(/-/g, '') } } },
+          ] } };
         } })) as any,
       };
       const synced = await retrieveDirectApplications({ lastUpdateDate: '2026-10-11' }, { syncExisting: true }, dependencies);
-      assert.equal(calls[0].lastUpdateDate, 20261011); assert.equal(calls[0].runStartDate, undefined);
+      const { directApplicationSyncWindow } = await import('../lib/directApplicationSync');
+      const tomorrow = directApplicationSyncWindow({}).tomorrow;
+      assert.equal(calls[0].lastUpdateDate, 20261011);
+      assert.equal(calls[0].runStartDate.from, Number(tomorrow.replace(/-/g, '')));
       assert.equal(calls[0].applicationStatus, undefined); assert.equal(synced.rows.length, 1);
       assert.equal(synced.rows[0]['Application Status'], 'Cancelled');
       assert.equal(synced.rows[0]['TPG Modified On'], '2026-10-12T08:00:00+08:00');
       const preview = await retrieveDirectApplications({}, {}, dependencies);
-      assert.equal(preview.rows.length, 0); assert.ok(calls[1].runStartDate.from);
+      assert.equal(preview.rows.length, 1); assert.equal(preview.rows[0]['Application ID'], 'TOMORROW-TEST');
+      assert.equal(calls[1].runStartDate.from, calls[0].runStartDate.from);
     });
     await t.test('unchanged overlaps skip imports; an existing payment/status/profile change updates without enrolling again', async () => {
       const row = makeRow('Confirmed (Pending payment)'); await insert(row, 'ENR-DONE');
@@ -194,7 +203,7 @@ test('direct application automation (disposable Postgres; no live services)', { 
     await t.test('failed fetch/import holds the cursor and failed sources can retry from the same window', async () => {
       const row = makeRow(); await insert(row, 'ENR-DONE');
       const now = () => new Date('2026-10-12T01:00:00Z');
-      await run({ retrieve: async filters => { assert.equal(filters.lastUpdateDate, '2026-04-15'); return { rows: [row] }; },
+      await run({ retrieve: async filters => { assert.equal(filters.lastUpdateDate, '2026-10-11'); return { rows: [row] }; },
         importRows: noImport, process: async () => [], now });
       const original = (await db.query('SELECT * FROM da_application_sync_state')).rows[0];
       const fetchFailed = await run({ retrieve: async filters => { assert.equal(filters.lastUpdateDate, '2026-10-11'); throw new Error('Second page unavailable'); },
@@ -211,6 +220,44 @@ test('direct application automation (disposable Postgres; no live services)', { 
         process: async () => [], now: () => new Date('2026-10-12T07:00:00Z') });
       assert.equal((await db.query('SELECT last_successful_fetch_at FROM da_application_sync_state')).rows[0].last_successful_fetch_at.toISOString(), '2026-10-12T07:00:00.000Z');
     });
+    await t.test('incomplete recovery processes safe rows, holds its completion marker, and never moves the incremental cursor', async () => {
+      const recentTime = new Date('2026-10-12T01:00:00Z');
+      const row = makeRow(); await insert(row, 'ENR-DONE');
+      await run({ retrieve: async () => ({ rows: [] }), importRows: noImport, process: async () => [], now: () => recentTime });
+      const partial = await run({ retrieve: async filters => {
+        assert.equal(filters.lastUpdateDate, '2026-04-15');
+        return { rows: [row], complete: false, warnings: ['received 1 of 2; recovery incomplete'] };
+      }, importRows: noImport, process: async () => { assert.fail('already enrolled'); }, now: () => new Date('2026-10-12T04:00:00Z') }, { mode: 'recovery' });
+      assert.equal(partial.status, 'completed_with_errors'); assert.equal(partial.fetched, 1);
+      const state = (await db.query('SELECT * FROM da_application_sync_state')).rows[0];
+      assert.equal(state.last_successful_fetch_at.toISOString(), recentTime.toISOString());
+      assert.equal(state.last_recovery_at, null);
+      await run({ retrieve: async filters => { assert.equal(filters.lastUpdateDate, '2026-10-11'); return { rows: [] }; },
+        importRows: noImport, process: async () => [], now: () => new Date('2026-10-12T07:00:00Z') });
+      await run({ retrieve: async () => ({ rows: [row] }), importRows: noImport, process: async () => [],
+        now: () => new Date('2026-10-12T10:00:00Z') }, { mode: 'recovery' });
+      const completed = (await db.query('SELECT * FROM da_application_sync_state')).rows[0];
+      assert.equal(completed.last_successful_fetch_at.toISOString(), '2026-10-12T07:00:00.000Z');
+      assert.equal(completed.last_recovery_at.toISOString(), '2026-10-12T10:00:00.000Z');
+    });
+    await t.test('partial retrieval never enrols locally confirmed applications absent from the verified source set', async () => {
+      const observed = makeRow(); await insert(observed, 'ENR-DONE');
+      const unseen = makeRow(); await insert(unseen);
+      await run({ retrieve: async () => ({ rows: [unseen] }), importRows: noImport,
+        process: async () => [] });
+      const partial = await run({ retrieve: async () => ({ rows: [observed], complete: false }), importRows: noImport,
+        process: async () => { assert.fail('unseen row may have been cancelled at source'); } });
+      assert.equal(partial.attempted, 0); assert.equal(partial.error_count, 1);
+    });
+    await t.test('manual sync route requires authentication and validates mode before requesting a job', async () => {
+      const { default: handler } = await import('../pages/api/admin/run-da-automation');
+      let httpStatus = 0;
+      const response = { setHeader() {}, status(code: number) { httpStatus = code; return this; }, json() {} };
+      await handler({ method: 'POST', headers: {}, body: { mode: 'recovery' } } as any, response as any);
+      assert.equal(httpStatus, 401);
+      await handler({ method: 'POST', headers: { 'x-api-key': 'test-only-service-key' }, body: { mode: 'all' } } as any, response as any);
+      assert.equal(httpStatus, 400);
+    });
     await t.test('failed enrolments retry from local source state even when the next API pull returns no applications', async () => {
       const row = makeRow(); const id = await insert(row);
       const failed = await run({ retrieve: async () => ({ rows: [row] }), importRows: noImport,
@@ -226,9 +273,9 @@ test('direct application automation (disposable Postgres; no live services)', { 
       await run({ retrieve: async () => ({ rows: [] }), importRows: noImport,
         process: async () => { assert.fail('already enrolled retry must not run again'); } });
     });
-    await t.test('new confirmed applications import and enrol while an existing past-run application receives its update', async () => {
+    await t.test('new confirmed applications enrol while existing future registrations receive updates', async () => {
       const fresh = makeRow();
-      const existing = makeRow('Confirmed', '2020-01-01'); await insert(existing, 'ENR-EXISTING');
+      const existing = makeRow('Confirmed'); await insert(existing, 'ENR-EXISTING');
       const changed = { ...existing, 'Trainee Name': 'Updated learner' };
       const report = await run({ retrieve: async () => ({ rows: [fresh, changed, makeRow('Confirm application')] }),
         importRows: rows => importDirectApplications(rows, { enqueue: false, sourceSync: true }),
@@ -252,8 +299,23 @@ test('direct application automation (disposable Postgres; no live services)', { 
       assert.equal((await db.query('SELECT * FROM da_application_sync_state')).rows.length, 0);
       assert.equal((await db.query('SELECT application_status FROM da_application WHERE id=$1', [id])).rows[0].application_status, 'Confirmed');
     });
-    await t.test('TPG cancellation after a class starts reconciles local records and retries failed invoice/calendar cleanup', async () => {
-      const row = { ...makeRow('Confirmed', '2020-01-01'), 'Trainee Email': `cancel-${randomUUID()}@example.test`,
+    await t.test('today and past local retries are excluded from enrolment and cancellation reconciliation', async () => {
+      const today = makeRow('Confirmed', '2026-10-12'); await insert(today);
+      const cancelled = makeRow('Cancelled', '2026-10-11'); await insert(cancelled, 'ENR-PAST');
+      for (const row of [today, cancelled]) {
+        await db.query(`INSERT INTO da_application_source_sync (application_id,source_fingerprint,cancellation_pending)
+          VALUES ($1,'test',$2)`, [row['Application ID'], row === cancelled]);
+      }
+      const report = await run({ retrieve: async () => ({ rows: [today, cancelled] }),
+        importRows: async () => { assert.fail('outside registration scope'); },
+        process: async () => { assert.fail('today must not auto-enrol'); },
+        cancel: async () => { assert.fail('past class must not reconcile'); },
+        now: () => new Date('2026-10-12T01:00:00Z') });
+      assert.equal(report.attempted, 0); assert.equal(report.cancelled, 0);
+      assert.equal((await db.query('SELECT cancellation_pending FROM da_application_source_sync WHERE application_id=$1', [cancelled['Application ID']])).rows[0].cancellation_pending, true);
+    });
+    await t.test('TPG cancellation of a future registration reconciles records and retries failed invoice/calendar cleanup', async () => {
+      const row = { ...makeRow('Confirmed'), 'Trainee Email': `cancel-${randomUUID()}@example.test`,
         'Trainee ID': `TEST-${randomUUID()}`, 'Course Title': 'Test cancellation' };
       const ref = `ENR-${randomUUID()}`; ownedRefs.push(ref);
       const id = await insert(row, ref);
@@ -262,7 +324,7 @@ test('direct application automation (disposable Postgres; no live services)', { 
       const runId = randomUUID();
       await db.query('INSERT INTO app_user (id,email,full_name) VALUES ($1,$2,$3)', [userId, row['Trainee Email'], 'Test learner']);
       await db.query('INSERT INTO course (id,title) VALUES ($1,$2)', [courseId, 'Test cancellation']);
-      await db.query('INSERT INTO course_run (id,course_id,course_run_id,start_date,end_date) VALUES ($1,$2,$3,$4,$4)', [runId, courseId, row['Course Run ID'], '2020-01-01']);
+      await db.query('INSERT INTO course_run (id,course_id,course_run_id,start_date,end_date) VALUES ($1,$2,$3,$4,$4)', [runId, courseId, row['Course Run ID'], row['Course Start Date']]);
       await db.query(`INSERT INTO enrollment (user_id,course_id,course_run_id,enrolment_id,enrolment_status,nric,email,calendar_added)
         VALUES ($1,$2,$3,$4,'Confirmed',$5,$6,true)`, [userId, courseId, runId, ref, row['Trainee ID'], row['Trainee Email']]);
       await db.query(`INSERT INTO ssg_enrolments (enrolment_id,enrolment_status,raw_data) VALUES ($1,'Confirmed','{"status":"Confirmed"}')`, [ref]);
