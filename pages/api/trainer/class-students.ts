@@ -41,6 +41,8 @@ export interface RosterLearner extends RosterRow {
     enrolment_ids: string[];
     /** Distinct emails across those rows (primary first). */
     emails: string[];
+    /** Distinct learner accounts across those rows — submissions may sit under any of them. */
+    user_ids: string[];
 }
 
 const normName = (s: string) => s.trim().toUpperCase().replace(/\s+/g, ' ');
@@ -79,6 +81,7 @@ function mergeDuplicateLearners(rows: RosterRow[]): RosterLearner[] {
             nric: primary.nric ?? ordered.find(r => r.nric)?.nric ?? null,
             email: primary.email || ordered.find(r => r.email)?.email || null,
             emails: uniq(ordered.map(r => r.email)),
+            user_ids: uniq(ordered.map(r => r.user_id)),
             enrolment_ids: ordered.map(r => r.enrolment_id),
             source: ordered.some(r => r.source === 'ssg') ? 'ssg' : 'manual',
             certificate: primary.certificate ?? ordered.find(r => r.certificate)?.certificate ?? null,
@@ -89,7 +92,9 @@ function mergeDuplicateLearners(rows: RosterRow[]): RosterLearner[] {
             traqom_completed: ordered.some(r => r.traqom_completed),
             submitted_assessments: METHOD_ORDER.filter(m => ordered.some(r => r.submitted_assessments.includes(m))),
             submission_count: Math.max(...ordered.map(r => r.submission_count)),
-            assessor_signed: ordered.some(r => r.assessor_signed),
+            // Signed only when every account that uploaded files has them all stamped.
+            assessor_signed: ordered.some(r => r.submission_count > 0)
+                && ordered.every(r => r.submission_count === 0 || r.assessor_signed),
             assessment_folder_url: ordered.find(r => r.assessment_folder_url)?.assessment_folder_url ?? null,
         };
     });

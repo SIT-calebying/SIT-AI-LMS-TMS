@@ -423,7 +423,7 @@ POST /api/grading/update-grading  # Grade submission
 POST /api/trainer/grade-student   # Toggle learner competency (single enrolmentId or enrolmentIds[] for a merged learner)
 POST /api/trainer/traqom-status   # Tick TRAQOM survey completion (single or batch)
 GET/POST /api/trainer/assessor-signature  # Trainer's assessor block (name, NRIC, date, drawn signature)
-POST /api/trainer/sign-assessments        # Stamp / unstamp the assessor block on a learner's submitted files
+POST /api/trainer/sign-assessments        # Stamp / unstamp the assessor block on a learner's submitted files (learnerUserIds[] covers a merged learner's accounts)
 POST /api/assessments/ssg-create  # Create SSG assessment
 PUT  /api/assessments/ssg-update  # Update SSG assessment
 ```

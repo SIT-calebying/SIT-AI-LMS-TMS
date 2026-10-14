@@ -35,6 +35,8 @@ interface StudentData {
   // merged server-side; grading actions must hit every row.
   enrolment_ids?: string[];
   emails?: string[];
+  /** Every learner account behind the merged row — uploads may sit under any of them. */
+  user_ids?: string[];
 }
 
 const enrolmentIdsOf = (s: StudentData) =>
@@ -298,7 +300,11 @@ const AssessmentGrading: React.FC = () => {
       const res = await fetch('/api/trainer/sign-assessments', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ courseRunId: selectedCourseRunId, learnerUserId: student.user_id, signed }),
+        body: JSON.stringify({
+          courseRunId: selectedCourseRunId,
+          learnerUserIds: student.user_ids && student.user_ids.length > 0 ? student.user_ids : [student.user_id],
+          signed,
+        }),
       });
       const json = await res.json();
       if (res.status === 409 && (json?.code === 'NO_ASSESSOR_PROFILE' || json?.code === 'NO_SIGNATURE')) {

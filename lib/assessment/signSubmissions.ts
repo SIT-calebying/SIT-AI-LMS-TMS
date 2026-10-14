@@ -178,25 +178,26 @@ interface SubmissionRow {
   original_file_name: string | null;
 }
 
-async function listSubmissions(learnerUserId: string, courseRunId: string): Promise<SubmissionRow[]> {
+async function listSubmissions(learnerUserIds: string[], courseRunId: string): Promise<SubmissionRow[]> {
   const r = await pool.query(
     `SELECT id, assessment_type, file_name, file_url, assessor_signed_at, original_file_url, original_file_name
        FROM link_assessment_submission
-      WHERE user_id = $1 AND course_run_id = $2
+      WHERE user_id = ANY($1) AND course_run_id = $2
       ORDER BY assessment_type, submitted_at`,
-    [learnerUserId, courseRunId],
+    [learnerUserIds, courseRunId],
   );
   return r.rows;
 }
 
 export async function signLearnerSubmissions(params: {
   trainerUserId: string;
-  learnerUserId: string;
+  /** Every account of the learner in the run (duplicate signups are merged on the roster). */
+  learnerUserIds: string[];
   courseRunId: string;
   assessor: AssessorRecord;
 }): Promise<SubmissionSignResult[]> {
   const details = toAssessorDetails(params.assessor);
-  const rows = await listSubmissions(params.learnerUserId, params.courseRunId);
+  const rows = await listSubmissions(params.learnerUserIds, params.courseRunId);
   if (rows.length === 0) return [];
 
   const drive = await getDriveClient();
@@ -268,10 +269,10 @@ export async function signLearnerSubmissions(params: {
 }
 
 export async function unsignLearnerSubmissions(params: {
-  learnerUserId: string;
+  learnerUserIds: string[];
   courseRunId: string;
 }): Promise<SubmissionSignResult[]> {
-  const rows = await listSubmissions(params.learnerUserId, params.courseRunId);
+  const rows = await listSubmissions(params.learnerUserIds, params.courseRunId);
   const signed = rows.filter(r => r.assessor_signed_at);
   if (signed.length === 0) return [];
 
