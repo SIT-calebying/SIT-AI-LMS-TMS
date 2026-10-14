@@ -69,6 +69,7 @@ import WorkflowGuidesView from '../components/training-provider/WorkflowGuidesVi
 import AddSessionsView from '../components/admin/AddSessionsView';
 import CourseSessionTimingView from '../components/admin/CourseSessionTimingView';
 import SupportTicketsView from '../components/admin/SupportTicketsView';
+import SigninRequestsView from '../components/admin/SigninRequestsView';
 import SupportTicketDetailView from '../components/admin/SupportTicketDetailView';
 import MasterListView from '../components/admin/MasterListView';
 import WsqScheduleSyncView from '../components/admin/WsqScheduleSyncView';
@@ -229,6 +230,7 @@ const PAGE_LABELS: Partial<Record<AdminPage, string>> = {
   [AdminPage.AddSessions]: 'Add Sessions',
   [AdminPage.CourseSessionTiming]: 'Course Session Timing',
   [AdminPage.SupportTickets]: 'Support Tickets',
+  [AdminPage.SigninRequests]: 'Sign-in Requests',
   [AdminPage.SoftwareCredentials]: 'Software Credentials',
   [AdminPage.RescheduleCancel]: 'Reschedule & Cancel',
   [AdminPage.SupportTicketDetail]: 'Ticket Detail',
@@ -510,6 +512,8 @@ const AdminLayout: React.FC = () => {
         return <WorkflowGuidesView initialWorkflowId={selectedWorkflowId || undefined} />;
       case AdminPage.SupportTickets:
         return <SupportTicketsView />;
+      case AdminPage.SigninRequests:
+        return <SigninRequestsView />;
       case AdminPage.SupportTicketDetail:
         return <SupportTicketDetailView />;
       case AdminPage.MasterList:

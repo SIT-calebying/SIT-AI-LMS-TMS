@@ -57,6 +57,7 @@ export type AutoEnrolStatus =
   | 'enroled'
   | 'grant_found'
   | 'invoiced'
+  | 'cancelled'
   | 'failed';
 
 export interface DaPipelineResult {

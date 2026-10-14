@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { UserRole } from '@app-types';
 import { Button } from './ui/Button';
-import { Card } from './ui/Card';
 import { authService, LoginCredentials, User } from '@lib/services/authService';
 import { useLms } from '@contexts/LmsContext';
 import { trainingProviderService, TrainingProviderData } from '@lib/services/trainingProviderService';
@@ -63,6 +62,10 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   const [feedbackForm, setFeedbackForm] = useState({ name: '', email: '', tel: '', message: '' });
   const [feedbackStatus, setFeedbackStatus] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [isSendingFeedback, setIsSendingFeedback] = useState(false);
+  const [registerForm, setRegisterForm] = useState({ fullName: '', email: '', courseRunId: '', phone: '' });
+  const [registerStatus, setRegisterStatus] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [logoFailed, setLogoFailed] = useState(false);
   const [forgotPasswordEmail, setForgotPasswordEmail] = useState('');
   const [forgotPasswordSent, setForgotPasswordSent] = useState(false);
 
@@ -119,6 +122,10 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
 
   const handleSendOtp = async (e: React.FormEvent) => {
     e.preventDefault();
+    await requestOtp(email);
+  };
+
+  const requestOtp = async (email: string) => {
     if (!email.includes('@')) {
       setError('Please enter a valid email address.');
       return;
@@ -380,6 +387,50 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
     }
   };
 
+  const handleSelfRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsRegistering(true);
+    setRegisterStatus(null);
+    try {
+      const response = await fetch('/api/auth/self-register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(registerForm),
+      });
+      const data = await response.json();
+      if (!data.success) {
+        // requestLogged: the system couldn't fix it on its own and has passed it to staff.
+        setRegisterStatus({ type: data.requestLogged ? 'info' : 'error', text: data.error || 'Registration failed. Please try again.' });
+        return;
+      }
+      const learnerEmail = registerForm.email.trim().toLowerCase();
+      const dates = data.startDate
+        ? ` (${new Date(data.startDate).toLocaleDateString('en-SG', { day: 'numeric', month: 'short', year: 'numeric' })})`
+        : '';
+      const otp = securitySettings.enableOtpLogin;
+      setRegisterStatus({
+        type: 'success',
+        text: `${data.alreadyEnrolled ? 'You are already enrolled in' : 'You are now enrolled in'} ${data.courseTitle}${dates}. `
+          + (otp
+            ? `We've sent a one-time code to ${learnerEmail}. Enter it on the sign-in panel to see your class.`
+            : `Sign in with ${learnerEmail} to see your class. A welcome email with your sign-in details is on its way.`),
+      });
+      // Hand the email over to the sign-in panel and send the OTP straight away.
+      setEmail(learnerEmail);
+      setError(null);
+      if (otp) {
+        await requestOtp(learnerEmail);
+        document.getElementById('signin')?.scrollIntoView({ behavior: 'smooth' });
+      } else {
+        setStep('password');
+      }
+    } catch {
+      setRegisterStatus({ type: 'error', text: 'Registration failed. Please try again.' });
+    } finally {
+      setIsRegistering(false);
+    }
+  };
+
   const handleSwitchToPassword = () => {
     setStep('password');
     setLoginType('password');
@@ -425,7 +476,8 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
 
 
 
-  const inputClasses = "block w-full px-4 py-3 text-gray-900 bg-white border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-500";
+  const registerInputClasses = "block w-full rounded-xl border border-white/15 bg-[#0d1733]/70 px-4 py-2.5 text-white placeholder-blue-200/40 focus:outline-none focus:ring-2 focus:ring-sky-400";
+  const inputClasses = "block w-full px-4 py-3 text-gray-900 bg-white border border-gray-300 rounded-xl shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-[#0d1424] dark:border-gray-700 dark:text-white dark:placeholder-gray-500";
 
   const renderEmailStep = () => (
     <form onSubmit={handleSendOtp} className="space-y-6">
@@ -833,54 +885,204 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
     }
   };
 
+  const providerName = isLoadingProviderData ? '...' : (trainingProviderData?.companyShortname || trainingProviderData?.companyName);
+  const brand = (
+    <div className="flex items-center gap-3">
+      {isLoadingProviderData ? (
+        <div className="w-12 h-12 bg-white/20 rounded-xl animate-pulse"></div>
+      ) : trainingProviderData?.companyLogoUrl && !logoFailed ? (
+        <img
+          src={trainingProviderData.companyLogoUrl}
+          alt="Company Logo"
+          className="w-10 h-10 lg:w-12 lg:h-12 rounded-xl bg-white p-0.5 object-contain shadow-lg"
+          onError={() => {
+            console.error('❌ LoginScreen: Failed to load company logo:', trainingProviderData?.companyLogoUrl);
+            setLogoFailed(true);
+          }}
+        />
+      ) : null}
+      <h1 className="text-xl lg:text-2xl font-bold text-white">{providerName}</h1>
+    </div>
+  );
+  const showSignInHeading = step === 'email' || step === 'password';
+  // OTP disabled → the 'email' step renders the password form (see renderCurrentStep).
+  const signInSubtitle = step === 'email' && securitySettings.enableOtpLogin
+    ? "Enter the email you registered with and we'll send you a one-time code — no password needed."
+    : 'Enter your email and password to sign in.';
+
   return (
-    <div className="flex items-center justify-center min-h-screen bg-[#1a3a69] dark:bg-gray-900">
-      <div className={`w-full px-4 ${step === 'roleSelect' ? 'max-w-lg' : 'max-w-md'}`}>
-        <Card className="!p-8 sm:!p-10 !shadow-2xl dark:bg-gray-800 dark:border-gray-700">
-          <div className="flex flex-col items-center text-center mb-8">
-            {/* Only show logo and company name when data is loaded */}
-            {isLoadingProviderData ? (
-              <div className="w-20 h-20 bg-gray-200 rounded-md mb-4 animate-pulse dark:bg-gray-700"></div>
-            ) : (
-              <img
-                src={trainingProviderData?.companyLogoUrl}
-                alt="Company Logo"
-                className="w-20 h-20 rounded-md mb-4"
-                onError={(e) => {
-                  console.error('❌ LoginScreen: Failed to load company logo:', trainingProviderData?.companyLogoUrl);
-                }}
-              />
-            )}
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-              {isLoadingProviderData ? '...' : (trainingProviderData?.companyShortname || trainingProviderData?.companyName)}
-            </h1>
-            <p className="text-gray-600 mt-2 dark:text-gray-400">LMS cum TMS for WSQ Courses</p>
+    // Desktop: exactly one window tall, so learners never scroll; a panel scrolls on its own only
+    // on very short windows. Phones: the two panels stack and the page scrolls normally.
+    <div className="flex flex-col lg:flex-row min-h-screen lg:h-screen">
+      {/* Left: branding panel */}
+      <div className="relative order-2 lg:order-1 overflow-hidden lg:w-1/2 bg-gradient-to-br from-[#0f1c3f] via-[#13265a] to-[#1b3a7a] text-white">
+        <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full text-sky-300/20" viewBox="0 0 800 900" preserveAspectRatio="xMidYMid slice" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <circle cx="760" cy="120" r="520" />
+          <circle cx="40" cy="1000" r="560" />
+          <circle cx="700" cy="760" r="300" />
+        </svg>
+
+        <div className="relative h-full lg:overflow-y-auto px-6 py-8 sm:px-12 lg:px-14 lg:py-8 flex flex-col">
+        <div className="hidden lg:flex">{brand}</div>
+
+        <div className="max-w-xl lg:my-auto lg:pt-6">
+          {/* Phones show this label in the header at the top of the sign-in panel */}
+          <div className="hidden lg:flex flex-wrap items-center gap-3">
+            <p className="text-xs font-semibold tracking-[0.2em] text-sky-300 uppercase">Training Management System</p>
+            <span className="inline-flex items-center rounded-full border border-sky-300/40 bg-white/10 px-3 py-0.5 text-xs font-medium text-sky-100">
+              For WSQ courses
+            </span>
           </div>
+          <p className="lg:mt-3 text-[15px] text-blue-100/90 leading-relaxed">
+            Your class materials, schedules, e-attendance, assessment and certificates, all in one place.
+            Not able to get your OTP, or can&apos;t see your class after signing in? Fill in the form below with the
+            Course Run ID from your course administrator or trainer, and we&apos;ll enrol you into your class.
+          </p>
+
+        {/* Learner self-registration: enrols the learner into the class by Course Run ID */}
+        <div id="register" className="mt-5 scroll-mt-6 rounded-2xl border border-white/10 bg-white/[0.06] p-5 sm:p-6 shadow-2xl backdrop-blur-sm">
+          <h2 className="text-lg font-semibold">New learner registration</h2>
+          <p className="mt-0.5 text-sm text-blue-100/70">
+            Already registered?{' '}
+            <a href="#signin" className="font-semibold text-sky-300 hover:underline">Sign in here</a>.
+          </p>
+
+          <form onSubmit={handleSelfRegister} className="mt-4 space-y-3">
+            <div>
+              <label htmlFor="reg-name" className="block text-sm font-medium text-blue-50 mb-1">Name</label>
+              <input
+                id="reg-name"
+                type="text"
+                autoComplete="name"
+                required
+                maxLength={120}
+                value={registerForm.fullName}
+                onChange={(e) => setRegisterForm(prev => ({ ...prev, fullName: e.target.value }))}
+                placeholder="As shown on your NRIC / passport"
+                className={registerInputClasses}
+              />
+            </div>
+            <div>
+              <label htmlFor="reg-email" className="block text-sm font-medium text-blue-50 mb-1">Email</label>
+              <input
+                id="reg-email"
+                type="email"
+                autoComplete="email"
+                required
+                value={registerForm.email}
+                onChange={(e) => setRegisterForm(prev => ({ ...prev, email: e.target.value }))}
+                placeholder="you@example.com"
+                className={registerInputClasses}
+              />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="reg-run" className="block text-sm font-medium text-blue-50 mb-1">Course Run ID</label>
+                <input
+                  id="reg-run"
+                  type="text"
+                  required
+                  maxLength={100}
+                  value={registerForm.courseRunId}
+                  onChange={(e) => setRegisterForm(prev => ({ ...prev, courseRunId: e.target.value.trim() }))}
+                  placeholder="e.g. 1234567"
+                  className={`${registerInputClasses} font-mono tracking-wider`}
+                />
+              </div>
+              <div>
+                <label htmlFor="reg-phone" className="block text-sm font-medium text-blue-50 mb-1">
+                  Mobile <span className="font-normal text-blue-100/50">(optional)</span>
+                </label>
+                <input
+                  id="reg-phone"
+                  type="tel"
+                  autoComplete="tel"
+                  maxLength={20}
+                  value={registerForm.phone}
+                  onChange={(e) => setRegisterForm(prev => ({ ...prev, phone: e.target.value }))}
+                  placeholder="e.g. 9123 4567"
+                  className={registerInputClasses}
+                />
+              </div>
+            </div>
+            <p className="-mt-1 text-xs text-blue-100/60">Your Course Run ID is provided by your course administrator or trainer.</p>
+
+            {registerStatus && (
+              <p
+                role="status"
+                className={`rounded-lg px-3 py-2 text-sm ${registerStatus.type === 'success' ? 'bg-emerald-500/15 text-emerald-200' : registerStatus.type === 'info' ? 'bg-amber-500/15 text-amber-100' : 'bg-red-500/15 text-red-200'}`}
+              >
+                {registerStatus.text}
+              </p>
+            )}
+
+            <Button type="submit" className="w-full !py-3" size="lg" disabled={isRegistering}>
+              {isRegistering ? 'Registering...' : 'Register'}
+            </Button>
+          </form>
+        </div>
+        </div>
+
+        <p className="powered-by lg:hidden mt-8 text-center text-xs text-blue-100/70">
+          Powered by{' '}
+          <a href="https://www.tertiaryinfotech.com/" target="_blank" rel="noopener noreferrer" className="hover:underline">
+            Tertiary Infotech Academy Pte Ltd
+          </a>
+        </p>
+        </div>
+      </div>
+
+      {/* Right: sign-in panel (always dark, like the course-registration login) */}
+      <div id="signin" className="dark order-1 lg:order-2 lg:w-1/2 flex flex-col items-center bg-[#0b1120] text-gray-100 px-6 pt-6 pb-8 sm:px-12 lg:pt-10 lg:pb-5 lg:overflow-y-auto">
+        <div className="w-full max-w-md mb-8 lg:hidden">
+          {brand}
+          <p className="mt-3 text-[11px] font-semibold tracking-[0.2em] text-sky-300 uppercase">
+            Training Management System · For WSQ courses
+          </p>
+        </div>
+        <div className={`w-full my-auto ${step === 'roleSelect' ? 'max-w-lg' : 'max-w-md'}`}>
+          {showSignInHeading && (
+            <div className="mb-6">
+              <p className="text-xs font-semibold tracking-[0.2em] text-blue-400 uppercase">Welcome back</p>
+              <h2 className="mt-2 text-3xl font-bold text-white">Sign in to the TMS</h2>
+              <p className="mt-3 text-gray-400">{signInSubtitle}</p>
+            </div>
+          )}
 
           {renderCurrentStep()}
 
-          <div className="mt-8 text-center text-xs text-gray-500 dark:text-gray-400">
-            <div className="flex justify-center space-x-4">
-              <button onClick={() => setShowPrivacyPolicy(true)} className="hover:underline cursor-pointer">Privacy Policy</button>
-              <button onClick={() => setShowAcceptableUsePolicy(true)} className="hover:underline cursor-pointer">Acceptable Use Policy</button>
-              <button onClick={() => { setShowFeedback(true); setFeedbackStatus(null); setFeedbackForm({ name: '', email: '', tel: '', message: '' }); }} className="hover:underline cursor-pointer">Feedback</button>
-            </div>
+          {showSignInHeading && (
+            <p className="mt-6 text-center text-sm text-gray-400">
+              Didn&apos;t get your OTP, or can&apos;t see your class?{' '}
+              <a href="#register" className="font-semibold text-blue-400 hover:underline">Register with your Course Run ID</a>
+            </p>
+          )}
+
+          <div className="mt-6 pt-5 border-t border-gray-800 text-center text-xs text-gray-500">
+            {showSignInHeading && (
+              <p className="mb-2">Same email as your course-registration account.</p>
+            )}
             {trainingProviderProfile?.companyWebsite && (
-              <p className="mt-3">
-                Browse our WSQ courses at{' '}
+              <p className="mb-4">
                 <a href={trainingProviderProfile.companyWebsite} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">
                   {trainingProviderProfile.companyWebsite}
                 </a>
               </p>
             )}
-            <p className="powered-by mt-3">
-              Powered by{' '}
-              <a href="https://www.tertiaryinfotech.com/" target="_blank" rel="noopener noreferrer" className="hover:underline">
-                Tertiary Infotech Academy Pte Ltd
-              </a>
-            </p>
+            <div className="flex justify-center space-x-4">
+              <button onClick={() => setShowPrivacyPolicy(true)} className="hover:underline cursor-pointer">Privacy Policy</button>
+              <button onClick={() => setShowAcceptableUsePolicy(true)} className="hover:underline cursor-pointer">Acceptable Use Policy</button>
+              <button onClick={() => { setShowFeedback(true); setFeedbackStatus(null); setFeedbackForm({ name: '', email: '', tel: '', message: '' }); }} className="hover:underline cursor-pointer">Feedback</button>
+            </div>
           </div>
-        </Card>
+        </div>
+
+        <p className="powered-by hidden lg:block mt-8 text-center text-xs text-gray-500">
+          Powered by{' '}
+          <a href="https://www.tertiaryinfotech.com/" target="_blank" rel="noopener noreferrer" className="hover:underline text-gray-400">
+            Tertiary Infotech Academy Pte Ltd
+          </a>
+        </p>
       </div>
 
       {/* Privacy Policy Modal */}

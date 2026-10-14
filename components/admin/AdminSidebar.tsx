@@ -461,6 +461,7 @@ const AdminSidebar: React.FC<AdminSidebarProps> = ({ onNavigate, onSelectWorkflo
 
             <NavSection title="Support Tickets" icon={IconName.Help} collapsed={collapsed} isOpen={openSections.supportTickets} onToggle={() => toggleSection('supportTickets')}>
                 <NavItem page={AdminPage.SupportTickets} label="View All Tickets" isSubItem />
+                <NavItem page={AdminPage.SigninRequests} label="Sign-in Requests" isSubItem />
             </NavSection>
 
 

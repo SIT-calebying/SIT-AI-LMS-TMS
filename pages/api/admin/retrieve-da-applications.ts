@@ -8,6 +8,7 @@ import {
 import { getTrainingPartnerIdentifiers } from '@lib/trainingPartnerIdentifiers';
 import pool from '@lib/db';
 import { collectDirectApplicationPages } from '@lib/directApplicationPagination';
+import { directApplicationSyncWindow } from '@lib/directApplicationSync';
 
 export const config = { maxDuration: 300 };
 
@@ -51,6 +52,8 @@ function normalizeApplication(app: DirectCourseApplication): Record<string, unkn
   return {
     'Application ID': cleanString(app.applicationId),
     'Application Date': isoDateOnly(app.confirmedOn || app.createdOn || app.modifiedOn),
+    'TPG Created On': cleanString(app.createdOn),
+    'TPG Modified On': cleanString(app.modifiedOn),
     'Application Status': cleanString(app.applicationStatus),
     // SSG returns "Confirmed" for both paid and unpaid learners; the portal's
     // "Confirmed (Pending payment)" comes from paymentDetail.status ("Pending" /
@@ -79,26 +82,35 @@ function normalizeApplication(app: DirectCourseApplication): Record<string, unkn
   };
 }
 
-/** Shared read-only retrieval; manual preview and scheduled enrolment use identical filters. */
-export async function retrieveDirectApplications(filters: Record<string, unknown> = {}) {
+interface RetrievalDependencies {
+  credentials: () => ReturnType<ReturnType<typeof getSSGCredentialsService>['getSSGCredentials']>;
+  partner: typeof getTrainingPartnerIdentifiers;
+  api: typeof createSSGDirectCourseApplicationAPI;
+}
+
+/** Registration scope: every pull covers only classes starting tomorrow onward. */
+export async function retrieveDirectApplications(
+  filters: Record<string, unknown> = {}, options: { syncExisting?: boolean } = {},
+  dependencies: RetrievalDependencies = {
+    credentials: () => getSSGCredentialsService().getSSGCredentials(),
+    partner: getTrainingPartnerIdentifiers, api: createSSGDirectCourseApplicationAPI,
+  },
+) {
     const req = { body: filters };
-    const credentials = await getSSGCredentialsService().getSSGCredentials();
+    const credentials = await dependencies.credentials();
     if (!credentials) {
       throw new Error('SSG credentials are not configured');
     }
 
-    const tp = await getTrainingPartnerIdentifiers();
+    const tp = await dependencies.partner();
     const uen = cleanString(req.body?.uen) || credentials.uen || tp.uen;
     const tpCode = cleanString(req.body?.tpCode) || tp.code;
     if (!uen || !tpCode) {
       throw new Error('Missing UEN or Training Provider code');
     }
 
-    // Upcoming classes only. Everything retrieved here goes on to be enrolled
-    // and invoiced, so a class that has already started must never come back.
-    // The earliest run start date we ask SSG for is today (Singapore).
-    const todayIso = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Singapore' });
-    const todayYmd = Number(todayIso.replace(/-/g, ''));
+    const { tomorrow: tomorrowIso } = directApplicationSyncWindow({});
+    const tomorrowYmd = Number(tomorrowIso.replace(/-/g, ''));
 
     // Always send lastUpdateDate explicitly; when the caller gives none, use
     // SSG's 180-day maximum. Old history cannot slip through because of the
@@ -106,14 +118,17 @@ export async function retrieveDirectApplications(filters: Record<string, unknown
     const defaultSince = new Date(Date.now() - 180 * 86400000).toLocaleDateString('en-CA', { timeZone: 'Asia/Singapore' });
     const lastUpdateDate = parseDateFilter(req.body?.lastUpdateDate) ?? Number(defaultSince.replace(/-/g, ''));
     const requestedRunFrom = parseDateFilter(req.body?.runStartDateFrom);
-    const runStartFrom = requestedRunFrom && requestedRunFrom > todayYmd ? requestedRunFrom : todayYmd;
+    const runStartFrom = requestedRunFrom && requestedRunFrom > tomorrowYmd ? requestedRunFrom : tomorrowYmd;
+    const runStartTo = parseDateFilter(req.body?.runStartDateTo);
+    const minimumStart = yyyymmddToIso(runStartFrom);
+    const maximumStart = runStartTo ? yyyymmddToIso(runStartTo) : undefined;
 
     const pageSizeRaw = Number(req.body?.pageSize || DEFAULT_PAGE_SIZE);
     const pageSize = Number.isFinite(pageSizeRaw) && pageSizeRaw > 0
       ? Math.min(Math.floor(pageSizeRaw), DEFAULT_PAGE_SIZE)
       : DEFAULT_PAGE_SIZE;
 
-    const api = createSSGDirectCourseApplicationAPI(
+    const api = dependencies.api(
       credentials.ssgApiBaseUrl || process.env.SSG_API_URL || process.env.SSG_API_BASE_URL || 'https://api.ssg-wsg.sg',
       credentials,
     );
@@ -136,24 +151,24 @@ export async function retrieveDirectApplications(filters: Record<string, unknown
       lastUpdateDate,
       runStartDate: {
         from: runStartFrom,
-        to: parseDateFilter(req.body?.runStartDateTo),
+        to: runStartTo,
       },
     };
 
-    const { applications, total, pages: pagesFetched } = await collectDirectApplicationPages(
+    const { applications, total, pages: pagesFetched, complete, warnings, attempts, duplicates } = await collectDirectApplicationPages(
       page => api.retrieveTrainingProviderCourseApplications({ ...baseFilter, page }), pageSize, MAX_PAGES_PER_REQUEST,
+      { attempts: 3, allowIncomplete: options.syncExisting === true },
     );
     const allRows = applications.map(normalizeApplication);
 
-    // Second check in case SSG ignores the run-date filter: drop any class that
-    // has already started, and any row whose start date cannot be read.
+    // Enforce the same registration scope if SSG ignores the date filter.
     const upcomingRows = allRows.filter((row) => {
       const start = String(row['Course Start Date'] || '');
-      return /^\d{4}-\d{2}-\d{2}$/.test(start) && start >= todayIso;
+      return /^\d{4}-\d{2}-\d{2}$/.test(start) && start >= minimumStart && (!maximumStart || start <= maximumStart);
     });
     // "Confirmed" plus its variants such as "Confirmed (Pending payment)" —
     // all enrollable per lib/da-status.ts.
-    const rows = wantConfirmed
+    const rows = options.syncExisting ? upcomingRows : wantConfirmed
       ? upcomingRows.filter((row) => String(row['Application Status'] || '').trim().toLowerCase().startsWith('confirmed'))
       : upcomingRows;
 
@@ -188,8 +203,9 @@ export async function retrieveDirectApplications(filters: Record<string, unknown
       fetched: rows.length,
       skippedPastClasses: allRows.length - upcomingRows.length,
       lmsStatus,
-      upcomingFrom: todayIso,
+      upcomingFrom: minimumStart,
       pages: pagesFetched,
+      complete, warnings, attempts, duplicates,
       rows,
     };
 }

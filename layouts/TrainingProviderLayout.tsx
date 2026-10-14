@@ -23,6 +23,7 @@ import OtpEmailTemplateView from '../components/training-provider/OtpEmailTempla
 import CertificateEmailTemplateView from '../components/training-provider/CertificateEmailTemplateView';
 import FeedbackEmailTemplateView from '../components/training-provider/FeedbackEmailTemplateView';
 import PasswordResetEmailTemplateView from '../components/training-provider/PasswordResetEmailTemplateView';
+import WelcomeSigninEmailTemplateView from '../components/training-provider/WelcomeSigninEmailTemplateView';
 import BriefingOnAssessmentTemplateView from '../components/training-provider/BriefingOnAssessmentTemplateView';
 import TrainerInvitationEmailTemplateView from '../components/training-provider/TrainerInvitationEmailTemplateView';
 import FinalCourseConfirmationEmailTemplateView from '../components/training-provider/FinalCourseConfirmationEmailTemplateView';
@@ -101,6 +102,8 @@ const TrainingProviderLayout: React.FC = () => {
         return <FeedbackEmailTemplateView />;
       case View.PasswordResetEmailTemplate:
         return <PasswordResetEmailTemplateView />;
+      case View.WelcomeSigninEmailTemplate:
+        return <WelcomeSigninEmailTemplateView />;
       case View.BriefingOnAssessmentTemplate:
         return <BriefingOnAssessmentTemplateView />;
       case View.TrainerInvitationEmailTemplate:

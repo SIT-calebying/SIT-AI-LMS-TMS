@@ -301,7 +301,7 @@ async function callSearchEnrolmentSSGBatch(records: Record<string, any>[], tpUen
  * POST /api/admin/upload-da-applications
  * Body: { data: [...Excel rows...] }
  */
-export async function importDirectApplications(data: Record<string, any>[], options: { enqueue?: boolean } = {}) {
+export async function importDirectApplications(data: Record<string, any>[], options: { enqueue?: boolean; sourceSync?: boolean } = {}) {
         if (!data || !Array.isArray(data)) {
             throw new Error('Invalid request body. Expected { data: [...] }');
         }
@@ -312,7 +312,9 @@ export async function importDirectApplications(data: Record<string, any>[], opti
 
         // Get existing application IDs, their statuses, and enrolment status to check for duplicates
         const existingResult = await pool.query(
-            `SELECT application_id, application_status, enrolment_status, trainee_id, course_run_id FROM da_application`
+            `SELECT application_id, application_status, enrolment_status, trainee_id, course_run_id FROM da_application
+             ${options.sourceSync ? 'WHERE application_id = ANY($1::text[]) OR course_run_id = ANY($2::text[])' : ''}`,
+            options.sourceSync ? [data.map(row => row['Application ID']), data.map(row => row['Course Run ID'])] : []
         );
 
         const existingApps = new Map<string, { application_status: string; enrolment_status: string | null }>(
@@ -376,7 +378,7 @@ export async function importDirectApplications(data: Record<string, any>[], opti
                     // 1. "Confirm application" → "Confirmed" or "Cancelled"
                     // 2. "Confirmed" → "Cancelled"
                     // 3. "Cancelled" → "Confirmed"
-                    const shouldUpdateStatus =
+                    const shouldUpdateStatus = options.sourceSync === true ||
                         (isExistingConfirmApplication && (isUploadedConfirmed || isUploadedCancelled)) ||
                         (isExistingConfirmed && isUploadedCancelled) ||
                         (isExistingCancelled && isUploadedConfirmed);
@@ -542,7 +544,7 @@ export async function importDirectApplications(data: Record<string, any>[], opti
                     });
 
                     // Queue for webhook if needed (skip for "Confirm application" → "Confirmed")
-                    if (record.shouldCallWebhook) {
+                    if (record.shouldCallWebhook && !options.sourceSync) {
                         webhookQueue.push({ ...record, source: 'update' });
                     }
                 }
@@ -633,7 +635,7 @@ export async function importDirectApplications(data: Record<string, any>[], opti
                     insertedRecords.push(result.rows[0]);
 
                     // Queue for webhook if new record has "Cancelled" status
-                    if ((record.application_status || '').toLowerCase() === 'cancelled') {
+                    if (!options.sourceSync && (record.application_status || '').toLowerCase() === 'cancelled') {
                         webhookQueue.push({ ...record, source: 'insert' });
                     }
                 }

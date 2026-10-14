@@ -122,7 +122,7 @@ async function seedDefaults() {
         {
             id: DA_AUTOMATION_TASK,
             name: 'Fetch & Enrol Direct Applications',
-            description: 'Fetch confirmed upcoming Instant Confirm applications and enrol them automatically at 9 AM, noon, 3 PM and 6 PM Singapore time. Report available on Retrieve Direct Application.',
+            description: 'Sync new and updated registrations for classes starting tomorrow onward at 9 AM, noon, 3 PM and 6 PM SGT with a one-day overlap. Reconcile TPG cancellations within that scope. Run independent weekly 180-day update-history recovery after the evening pull; incomplete recovery retries next evening. Manual triggers and reports are available on Retrieve Direct Application.',
             cron_expression: DA_AUTOMATION_CRON,
             api_endpoint: '/api/external/auto-retrieve-enrol-direct-applications',
             // Opt in per tenant; never silently enrol another tenant’s learners.
@@ -388,8 +388,8 @@ function getDirectHandler(taskId: string): TaskHandler | undefined {
     // Lazy-register handlers on first call
     if (directHandlers.size === 0) {
         directHandlers.set(DA_AUTOMATION_TASK, async () => {
-            const { runDirectApplicationAutomation } = await import('../directApplicationAutomation');
-            const result = await runDirectApplicationAutomation();
+            const { runScheduledDirectApplicationAutomation } = await import('../directApplicationAutomation');
+            const result = await runScheduledDirectApplicationAutomation();
             if (result && result.error_count > 0) throw new Error(`Direct application automation: ${result.error_count} issue(s); see Retrieve Direct Application report`);
             return result;
         });

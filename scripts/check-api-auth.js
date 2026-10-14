@@ -25,6 +25,7 @@ const PUBLIC = new Set([
   'android/send-otp.ts',
   'android/login.ts',
   'auth/forgot-password.ts',
+  'auth/self-register.ts', // login-screen learner self-enrolment: rate limited, live runs only, OTP-only new accounts
   'auth/verify.ts', // validates the presented token itself
   'auth/logout.ts', // revokes the presented token itself
   'auth/oauth-sync.ts', // service-key gated inside the handler

@@ -252,9 +252,27 @@ const pillClasses = {
 const DirectApplicationAutomationReport: React.FC = () => {
     const [report, setReport] = useState<{
         enabled: boolean; latest: (DaAutomationRun & { started_at: string }) | null; attentionCount: number;
+        latestRecovery: (DaAutomationRun & { started_at: string }) | null;
         attention: { application_id: string; auto_enrol_status: string | null; auto_enrol_error: string | null }[];
     } | null>(null);
     const [error, setError] = useState('');
+    const [triggering, setTriggering] = useState<'incremental' | 'recovery' | null>(null);
+    const [triggerMessage, setTriggerMessage] = useState('');
+    const triggerSync = async (mode: 'incremental' | 'recovery') => {
+        setTriggering(mode); setTriggerMessage('');
+        try {
+            const response = await fetch('/api/admin/run-da-automation', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }),
+            });
+            const json = await response.json();
+            if (!response.ok || !json.success) throw new Error(json.error || 'Unable to start sync');
+            setTriggerMessage(json.message);
+            const refreshed = await fetch('/api/admin/da-automation-report', { cache: 'no-store' });
+            const next = await refreshed.json();
+            if (refreshed.ok && next.success) { setReport(next); setError(''); }
+        } catch (err) { setError(err instanceof Error ? err.message : 'Unable to start sync'); }
+        finally { setTriggering(null); }
+    };
     useEffect(() => {
         const controller = new AbortController();
         const refresh = async () => {
@@ -275,38 +293,57 @@ const DirectApplicationAutomationReport: React.FC = () => {
     const formatTime = (value: string) => new Date(value).toLocaleString('en-SG', {
         timeZone: 'Asia/Singapore', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true,
     });
-    const hasIssues = latest?.error_count > 0 || report?.attentionCount > 0;
+    const hasIssues = (latest?.error_count ?? 0) > 0 || (report?.attentionCount ?? 0) > 0;
     return (
         <Card className="p-5 dark:bg-gray-800 dark:border-gray-700">
             <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                     <h3 className="text-base font-semibold text-gray-900 dark:text-white">Automatic fetch &amp; enrol</h3>
-                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Daily at 9 AM · 12 PM · 3 PM · 6 PM SGT. Confirmed upcoming applications only.</p>
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Classes starting tomorrow onward. Recent updates daily at 9 AM · 12 PM · 3 PM · 6 PM SGT. Weekly 180-day recovery after the evening pull. Syncs updates and cancellations; auto-enrols confirmed applications.</p>
                 </div>
                 <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${report?.enabled ? pillClasses.green : pillClasses.amber}`}>
                     {error ? 'Report unavailable' : !report ? 'Loading…' : report.enabled ? 'Schedule enabled' : 'Schedule disabled'}
                 </span>
             </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+                <Button variant="secondary" disabled={!!triggering || latest?.status === 'running'} onClick={() => void triggerSync('incremental')}>
+                    {triggering === 'incremental' ? 'Starting…' : 'Run recent updates'}
+                </Button>
+                <Button variant="secondary" disabled={!!triggering || latest?.status === 'running'} onClick={() => void triggerSync('recovery')}>
+                    {triggering === 'recovery' ? 'Starting…' : 'Run 180-day recovery'}
+                </Button>
+            </div>
+            <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">These actions sync applications, enrol eligible learners and reconcile TPG cancellations.</p>
+            {triggerMessage && <p role="status" className="mt-2 text-sm text-gray-600 dark:text-gray-300">{triggerMessage}</p>}
             {error && <p role="alert" className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
             {!error && report && (
                 <div aria-live="polite">
                     <p className="mt-4 text-sm text-gray-600 dark:text-gray-300">
-                        {latest ? <>Last auto run: <span className="font-medium">{formatTime(latest.started_at)}</span> · {latest.status.replace(/_/g, ' ')}
+                        {latest ? <>Last sync run: <span className="font-medium">{formatTime(latest.started_at)}</span> · {latest.status.replace(/_/g, ' ')}
                             {latest.completed_at && <span className="text-xs text-gray-500 dark:text-gray-400"> · finished {formatTime(latest.completed_at)}</span>}</>
                             : 'No automatic run recorded yet. Manual fetch and enrol remain available below.'}
                     </p>
                     {latest && <dl className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
                         {[
-                            ['Fetched', latest.fetched], ['Newly enrolled', latest.enrolled],
-                            ['Already enrolled', latest.already_enrolled], ['Errors', latest.error_count],
+                            ['Fetched', latest.fetched], ['Updated / imported', latest.imported],
+                            ['Unchanged', latest.unchanged ?? 0], ['Newly enrolled', latest.enrolled],
+                            ['Already enrolled', latest.already_enrolled], ['Cancelled', latest.cancelled ?? 0], ['Errors', latest.error_count],
                         ].map(([label, value]) => <div key={label} className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-900/40">
                             <dt className="text-xs text-gray-500 dark:text-gray-400">{label}</dt>
                             <dd className={`mt-1 text-xl font-semibold tabular-nums ${label === 'Errors' && Number(value) > 0 ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-white'}`}>{value}</dd>
                         </div>)}
                     </dl>}
-                    {latest?.deferred > 0 && <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">{latest.deferred} application(s) already processing in another run; not triggered twice.</p>}
+                    {latest?.last_update_date && <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">
+                        {latest.recovery ? '180-day recovery scan' : 'Recent updates'} · since {String(latest.last_update_date).slice(0, 10)}.
+                    </p>}
+                    {report.latestRecovery && report.latestRecovery.id !== latest?.id && <div className="mt-3 text-xs text-gray-500 dark:text-gray-400">
+                        <p>Last 180-day recovery: {formatTime(report.latestRecovery.started_at)} · {report.latestRecovery.status.replace(/_/g, ' ')}.</p>
+                        {report.latestRecovery.errors?.filter(issue => issue.step === 'fetch').map((issue, i) =>
+                            <p key={i} className="mt-1 text-amber-700 dark:text-amber-300">{issue.message}</p>)}
+                    </div>}
+                    {latest && latest.deferred > 0 && <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">{latest.deferred} application(s) already processing in another run; not triggered twice.</p>}
                     {hasIssues && <details className="mt-3 text-sm text-amber-800 dark:text-amber-300">
-                        <summary className="cursor-pointer">Review issues · {latest?.error_count || 0} in last run · {report.attentionCount} upcoming application(s) need attention</summary>
+                        <summary className="cursor-pointer">Review issues · {latest?.error_count || 0} in last run · {report.attentionCount} application(s) need attention</summary>
                         <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto text-xs">
                             {(latest?.errors || []).map((issue, i) => <li key={`run-${i}`}>{issue.applicationId ? `${issue.applicationId}: ` : ''}{issue.step} — {issue.message}</li>)}
                             {(report.attention || []).map(item => <li key={item.application_id}>{item.application_id}: {item.auto_enrol_error || item.auto_enrol_status || 'Processing has not completed'}</li>)}
@@ -403,7 +440,7 @@ export const RetrieveDirectApplicationView: React.FC = () => {
 
     // Read-only call: retrieves from TPGateway and reports what the LMS already
     // holds. Nothing is imported or enrolled until importRows/triggerAutoEnrol.
-    // The server limits results to classes starting today or later.
+    // The server limits results to classes starting tomorrow onward.
     const fetchFromTpg = async () => {
         const res = await fetch('/api/admin/retrieve-da-applications', {
             method: 'POST',
@@ -438,7 +475,7 @@ export const RetrieveDirectApplicationView: React.FC = () => {
             setPreview(notEnrolled);
             setSelectedIds(new Set(notEnrolled.filter(({ lms }) => !lms).map(({ row }) => row['Application ID'])));
             const enrolledCount = rows.length - notEnrolled.length;
-            const pastNote = json.skippedPastClasses > 0 ? ` ${json.skippedPastClasses} for classes that already started were left out.` : '';
+            const pastNote = json.skippedPastClasses > 0 ? ` ${json.skippedPastClasses} outside the class-date scope were left out.` : '';
             setFetchStats({
                 toReview: notEnrolled.length,
                 stuck: notEnrolled.filter(({ lms }) => !!lms).length,

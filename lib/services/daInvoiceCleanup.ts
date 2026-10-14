@@ -18,11 +18,13 @@ export async function deleteQboInvoiceIfPresent(
   label: string,
 ): Promise<string | null> {
   const id = (invoiceId || '').trim();
-  if (!id) return null;
+  if (!id || /^(manual|n\/a|-)$/i.test(id)) return null;
   try {
     const inv = await qboReadInvoice(undefined, id);
     if (inv?.syncToken) {
       await qboDeleteInvoice(undefined, id, inv.syncToken);
+    } else {
+      return `${label}: QuickBooks returned no SyncToken for invoice ${id}`;
     }
     return null;
   } catch (e) {
@@ -37,36 +39,51 @@ export async function deleteQboInvoiceIfPresent(
 
 /**
  * Delete the three QBO invoices (main / grant / SFC) attached to a DA row
- * and null out the invoice columns. Best-effort — QBO failures are returned
- * as warnings, never thrown.
+ * and null out only successfully deleted invoice columns. QBO failures are returned
+ * as warnings. Database write failures throw so retries retain their references.
  */
-async function deleteDaInvoices(da: DaInvoiceRow): Promise<string[]> {
+async function deleteDaInvoices(da: DaInvoiceRow, removeInvoice = deleteQboInvoiceIfPresent): Promise<string[]> {
   const [mainW, grantW, sfcW] = await Promise.all([
-    deleteQboInvoiceIfPresent(da.invoice_id, 'main'),
-    deleteQboInvoiceIfPresent(da.grant_invoice_id, 'grant'),
-    deleteQboInvoiceIfPresent(da.sfc_invoice_id, 'sfc'),
+    removeInvoice(da.invoice_id, 'main'),
+    removeInvoice(da.grant_invoice_id, 'grant'),
+    removeInvoice(da.sfc_invoice_id, 'sfc'),
   ]);
   const warnings = [mainW, grantW, sfcW].filter((w): w is string => !!w);
 
-  await pool.query(
-    `UPDATE da_application
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `UPDATE da_application
      SET application_status = 'Cancelled',
          enrolment_status = 'Cancelled',
-         invoice_id = NULL,
-         invoice_doc_number = NULL,
-         invoice_no = NULL,
-         invoice_drive_file_id = NULL,
-         invoice_drive_web_view_link = NULL,
-         grant_invoice_id = NULL,
-         grant_invoice_drive_file_id = NULL,
-         grant_invoice_drive_web_view_link = NULL,
-         sfc_invoice_id = NULL,
-         sfc_invoice_drive_file_id = NULL,
-         sfc_invoice_drive_web_view_link = NULL,
+         invoice_id = CASE WHEN $2 THEN NULL ELSE invoice_id END,
+         invoice_doc_number = CASE WHEN $2 THEN NULL ELSE invoice_doc_number END,
+         invoice_no = CASE WHEN $2 THEN NULL ELSE invoice_no END,
+         invoice_drive_file_id = CASE WHEN $2 THEN NULL ELSE invoice_drive_file_id END,
+         invoice_drive_web_view_link = CASE WHEN $2 THEN NULL ELSE invoice_drive_web_view_link END,
+         grant_invoice_id = CASE WHEN $3 THEN NULL ELSE grant_invoice_id END,
+         grant_invoice_drive_file_id = CASE WHEN $3 THEN NULL ELSE grant_invoice_drive_file_id END,
+         grant_invoice_drive_web_view_link = CASE WHEN $3 THEN NULL ELSE grant_invoice_drive_web_view_link END,
+         sfc_invoice_id = CASE WHEN $4 THEN NULL ELSE sfc_invoice_id END,
+         sfc_invoice_drive_file_id = CASE WHEN $4 THEN NULL ELSE sfc_invoice_drive_file_id END,
+         sfc_invoice_drive_web_view_link = CASE WHEN $4 THEN NULL ELSE sfc_invoice_drive_web_view_link END,
          updated_at = NOW()
      WHERE application_id = $1`,
-    [da.application_id]
-  );
+      [da.application_id, !mainW, !grantW, !sfcW]
+    );
+
+    if (!mainW && da.invoice_id && !/^(manual|n\/a|-)$/i.test(da.invoice_id.trim())) {
+      await client.query(`UPDATE invoice_jobs SET status = 'cancelled', qbo_invoice_id = NULL,
+      qbo_doc_number = NULL, invoice_no = NULL, drive_file_id = NULL, drive_web_view_link = NULL,
+      last_error = 'Direct Application cancelled; invoice removed', updated_at = NOW()
+      WHERE qbo_invoice_id = $1`, [da.invoice_id]);
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally { client.release(); }
 
   return warnings;
 }
@@ -98,7 +115,8 @@ export async function cleanupDaInvoicesForEnrolment(
  * the DA row loaded and doesn't want to rely on `enrolment_id` matching.
  */
 export async function cleanupDaInvoicesForApplicationId(
-  applicationId: string
+  applicationId: string,
+  removeInvoice = deleteQboInvoiceIfPresent,
 ): Promise<{ found: boolean; warnings: string[] }> {
   const r = await pool.query(
     `SELECT application_id, invoice_id, grant_invoice_id, sfc_invoice_id
@@ -109,6 +127,6 @@ export async function cleanupDaInvoicesForApplicationId(
   );
   const da = r.rows[0] as DaInvoiceRow | undefined;
   if (!da) return { found: false, warnings: [] };
-  const warnings = await deleteDaInvoices(da);
+  const warnings = await deleteDaInvoices(da, removeInvoice);
   return { found: true, warnings };
 }
