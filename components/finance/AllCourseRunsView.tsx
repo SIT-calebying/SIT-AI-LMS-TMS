@@ -684,14 +684,20 @@ const AllCourseRunsView: React.FC = () => {
             body: JSON.stringify({ applicationIds: daApplicationIds, sendEmail: false }),
           });
           const json = await res.json();
-          const results = Array.isArray(json.results) ? (json.results as { success: boolean }[]) : [];
+          const results = Array.isArray(json.results) ? (json.results as { success: boolean; error?: string }[]) : [];
           const daSucceeded = results.filter((r) => r.success).length;
           const daFailed = daApplicationIds.length - daSucceeded;
           succeeded += daSucceeded;
           failed += daFailed;
           setFmsInvProgressSucceeded(succeeded);
           setFmsInvProgressFailed(failed);
-          toastParts.push(`DA: ${daSucceeded}/${daApplicationIds.length} generated${daFailed ? ` (${daFailed} issue${daFailed !== 1 ? 's' : ''})` : ''}`);
+          // Show why, not just how many — a bare "(1 issue)" left admins guessing.
+          const daErrors = [
+            ...new Set(results.filter((r) => !r.success && r.error).map((r) => r.error as string)),
+          ];
+          if (!res.ok && json.error) daErrors.push(String(json.error));
+          const daDetail = daErrors.length ? `: ${daErrors.slice(0, 3).join('; ')}` : '';
+          toastParts.push(`DA: ${daSucceeded}/${daApplicationIds.length} generated${daFailed ? ` (${daFailed} issue${daFailed !== 1 ? 's' : ''})${daDetail}` : ''}`);
         } catch (e) {
           failed += daApplicationIds.length;
           setFmsInvProgressFailed(failed);

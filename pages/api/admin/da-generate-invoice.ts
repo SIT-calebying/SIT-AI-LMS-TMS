@@ -111,6 +111,20 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
       skipped?: boolean;
     }[] = [];
 
+    // Requested ids the query filtered out (cancelled/rejected/failed, or gone)
+    // used to vanish from `results`, so the caller only saw a short count.
+    const foundIds = new Set(rows.rows.map((r: { id: string }) => r.id));
+    for (const id of applicationIds as string[]) {
+      if (!foundIds.has(id)) {
+        results.push({
+          id,
+          success: false,
+          skipped: true,
+          error: 'Direct Application is cancelled, rejected or failed — generate it as a non-DA invoice instead.',
+        });
+      }
+    }
+
     for (const row of rows.rows) {
       const hasRealEnrolment = isRealSsgEnrolmentId(row.enrolment_id);
       const isEnrolConfirmed = String(row.enrolment_status || '').toLowerCase() === 'confirmed';

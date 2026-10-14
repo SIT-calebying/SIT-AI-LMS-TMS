@@ -142,6 +142,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
       conditions.push(`NOT EXISTS (
         SELECT 1 FROM public.da_application da2
         WHERE LOWER(TRIM(COALESCE(da2.enrolment_id,''))) = LOWER(TRIM(COALESCE(se.enrolment_id,'')))
+          AND LOWER(COALESCE(da2.application_status, '')) NOT IN ('cancelled', 'rejected', 'failed')
       )`);
       conditions.push(`NOT EXISTS (
         SELECT 1 FROM public.company_application ca2
@@ -279,6 +280,10 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                da.sfc_invoice_drive_web_view_link
         FROM public.da_application da
         WHERE LOWER(TRIM(COALESCE(da.enrolment_id,''))) = LOWER(TRIM(COALESCE(se.enrolment_id,'')))
+          -- A cancelled Direct Application leaves the SSG enrolment Confirmed but no longer makes it
+          -- a DA row: /api/admin/da-generate-invoice skips these statuses, so flagging the row DA
+          -- here routed it to a pipeline that silently did nothing ("DA: 0/1 generated").
+          AND LOWER(COALESCE(da.application_status, '')) NOT IN ('cancelled', 'rejected', 'failed')
         LIMIT 1
       ) da_chk ON true
       LEFT JOIN LATERAL (

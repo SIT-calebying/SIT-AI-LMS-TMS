@@ -300,13 +300,18 @@ export async function processInvoiceJob(jobId: string, opts: { repair?: boolean 
   const learnerEmail: string = job.learner_email;
   const courseCode: string = job.course_code;
 
-  // Fetch all needed fields from da_application
+  // Fetch all needed fields from da_application. A cancelled/rejected/failed
+  // application doesn't count: its enrolment is invoiced as non-DA, and its
+  // stale fee/SFC figures must not leak onto that invoice.
   const daRes = await pool.query(
     `SELECT full_course_fee, gst, skillsfuture_subsidy, skillsfuture_credit,
             course_title, course_reference_number, course_start_date, course_end_date,
             trainee_name, trainee_id, trainee_id_type, course_run_id, grant_id,
             skillsfuture_credit_claim_id, application_id
-     FROM da_application WHERE enrolment_id = $1 LIMIT 1`,
+     FROM da_application
+     WHERE enrolment_id = $1
+       AND LOWER(COALESCE(application_status, '')) NOT IN ('cancelled', 'rejected', 'failed')
+     LIMIT 1`,
     [enrolmentId]
   );
   const da = daRes.rows[0] || {};
