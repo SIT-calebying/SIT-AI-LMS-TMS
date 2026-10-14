@@ -12,7 +12,11 @@ import {
 export const config = { api: { responseLimit: false }, maxDuration: 120 };
 
 /**
- * POST { courseRunId, learnerUserId, signed: boolean }
+ * POST { courseRunId, learnerUserId | learnerUserIds, signed: boolean }
+ *
+ * learnerUserIds covers a learner with several accounts in the run (e.g. a
+ * personal-email signup plus the work-email one) — the roster merges them into
+ * one row, and their files can sit under either account.
  *
  * signed=true  → stamp the caller's assessor block (name/NRIC/date/signature)
  *                onto every unsigned PDF/DOCX/ODT/Pages file the learner submitted
@@ -28,8 +32,10 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
 
   const auth = (req as AuthedApiRequest).authUser!;
   const { courseRunId, learnerUserId, signed } = req.body || {};
-  if (typeof courseRunId !== 'string' || !courseRunId || typeof learnerUserId !== 'string' || !learnerUserId || typeof signed !== 'boolean') {
-    return res.status(400).json({ success: false, error: 'courseRunId, learnerUserId and signed (boolean) are required' });
+  const rawIds: unknown[] = Array.isArray(req.body?.learnerUserIds) ? req.body.learnerUserIds : [learnerUserId];
+  const learnerUserIds = Array.from(new Set(rawIds.filter((v): v is string => typeof v === 'string' && !!v)));
+  if (typeof courseRunId !== 'string' || !courseRunId || learnerUserIds.length === 0 || typeof signed !== 'boolean') {
+    return res.status(400).json({ success: false, error: 'courseRunId, learnerUserId(s) and signed (boolean) are required' });
   }
 
   // Trainers may only sign for classes they are assigned to.
@@ -42,7 +48,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
 
   try {
     if (!signed) {
-      const results = await unsignLearnerSubmissions({ learnerUserId, courseRunId });
+      const results = await unsignLearnerSubmissions({ learnerUserIds, courseRunId });
       return res.status(200).json({ success: true, signed: false, results });
     }
 
@@ -65,7 +71,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
       });
     }
 
-    const results = await signLearnerSubmissions({ trainerUserId, learnerUserId, courseRunId, assessor });
+    const results = await signLearnerSubmissions({ trainerUserId, learnerUserIds, courseRunId, assessor });
     const anySigned = results.some(r => r.status === 'signed');
     const allSignedOrSkipped = results.length > 0 && results.every(r => r.status === 'signed' || (r.status === 'skipped' && r.reason === 'Already signed'));
     return res.status(200).json({
