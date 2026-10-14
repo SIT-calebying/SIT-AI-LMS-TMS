@@ -1,7 +1,9 @@
-import { withAuth } from '@lib/auth/withAuth';
+import { withAuth, AuthedApiRequest } from '@lib/auth/withAuth';
 import { NextApiRequest, NextApiResponse } from 'next';
+import bcrypt from 'bcryptjs';
 import pool from '../../lib/db';
 import { cors } from '../../lib/cors';
+import { hashSessionToken, SESSION_TOKEN_PREFIX } from '@lib/auth/session';
 
 interface UpdateLearnerProfileRequest {
   userId: string;
@@ -45,8 +47,24 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
       return res.status(400).json({ success: false, error: 'Profile data is required' });
     }
 
-    console.log('Updating profile for user:', userId);
-    console.log('Profile data:', profileData);
+    // A user may only update their own profile; admin-type roles (e.g. Admin → View Learners
+    // editing NRIC/DOB/phone) and machine callers may update anyone's.
+    const authUser = (req as AuthedApiRequest).authUser!;
+    const canEditOthers =
+      authUser.isService ||
+      authUser.roles.has('admin') ||
+      authUser.roles.has('trainingProvider') ||
+      authUser.roles.has('developer');
+    if (!canEditOthers && authUser.id !== userId) {
+      return res.status(403).json({ success: false, error: 'Forbidden' });
+    }
+
+    if (profileData.password !== undefined && (typeof profileData.password !== 'string' || profileData.password.length < 6)) {
+      return res.status(400).json({ success: false, error: 'Password must be at least 6 characters long' });
+    }
+
+    // Field names only — never log values (passwords, NRIC, DOB).
+    console.log(`Updating profile for user ${userId}: ${Object.keys(profileData).join(', ')}`);
 
     // Start transaction
     const client = await pool.connect();
@@ -83,9 +101,10 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         paramIndex++;
       }
 
+      // Store only the bcrypt hash (login checks password_hash); clear the legacy plaintext column.
       if (profileData.password !== undefined) {
-        appUserFields.push(`password = $${paramIndex}`);
-        appUserValues.push(profileData.password);
+        appUserFields.push(`password_hash = $${paramIndex}`, `password = NULL`);
+        appUserValues.push(await bcrypt.hash(profileData.password, 10));
         paramIndex++;
       }
 
@@ -100,11 +119,20 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
           WHERE id = $${paramIndex}
         `;
         appUserValues.push(userId);
-        
-        console.log('App User Query:', appUserQuery);
-        console.log('App User Values:', appUserValues);
-        
+
         await client.query(appUserQuery, appUserValues);
+      }
+
+      // Password changed → kill every other session for this user (the caller's own stays alive),
+      // same as /api/auth/update-password.
+      if (profileData.password !== undefined) {
+        const header = req.headers.authorization || '';
+        const token = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : '';
+        if (token.startsWith(SESSION_TOKEN_PREFIX)) {
+          await client.query('DELETE FROM user_session WHERE user_id = $1 AND token_hash <> $2', [userId, hashSessionToken(token)]);
+        } else {
+          await client.query('DELETE FROM user_session WHERE user_id = $1', [userId]);
+        }
       }
 
       // Prepare learner_profile updates
@@ -176,10 +204,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
           SET ${learnerFields.join(', ')}
         `;
         learnerValues.push(userId);
-        
-        console.log('Learner Profile Upsert Query:', learnerQuery);
-        console.log('Learner Profile Values:', learnerValues);
-        
+
         await client.query(learnerQuery, learnerValues);
       }
 

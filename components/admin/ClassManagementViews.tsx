@@ -5647,6 +5647,10 @@ export const AssignStudentView: React.FC = () => {
     const [enrolledLearners, setEnrolledLearners] = useState<any[]>([]);
     const [loadingEnrolled, setLoadingEnrolled] = useState(false);
     const [unassigning, setUnassigning] = useState<string | null>(null);
+    // Personal login email (app_user.secondary_email) editor in the View / Remove tab
+    const [editingLoginEmailFor, setEditingLoginEmailFor] = useState<string | null>(null);
+    const [loginEmailDraft, setLoginEmailDraft] = useState('');
+    const [savingLoginEmail, setSavingLoginEmail] = useState(false);
 
     // Track local enrollment count changes
     const [localEnrollmentDeltas, setLocalEnrollmentDeltas] = useState<Record<string, number>>({});
@@ -5797,6 +5801,36 @@ export const AssignStudentView: React.FC = () => {
             setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed to remove learner' });
         } finally {
             setUnassigning(null);
+        }
+    };
+
+    // Lets a learner enrolled with a company email log in with a personal one — same account,
+    // so no duplicate learner/enrolment. An unused account already on that email must be
+    // released first (confirm-gated).
+    const handleSaveLoginEmail = async (learner: any, run: any) => {
+        setMessage(null);
+        setSavingLoginEmail(true);
+        const save = (releaseEmptyDuplicate: boolean) => fetch('/api/admin/set-learner-login-email', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ courseRunUuid: run.id, userId: learner.user_id, personalEmail: loginEmailDraft.trim(), releaseEmptyDuplicate }),
+        });
+        try {
+            let res = await save(false);
+            let data = await res.json();
+            if (res.status === 409 && data.code === 'EMPTY_DUPLICATE_ACCOUNT') {
+                if (!window.confirm(`${data.error.replace(/ Resend with .*$/, '')}\n\nDisable that unused account and link the email to ${learner.full_name}?`)) return;
+                res = await save(true);
+                data = await res.json();
+            }
+            if (!res.ok) throw new Error(data.error || 'Failed to save login email');
+            setEnrolledLearners(prev => prev.map(l => l.user_id === learner.user_id ? { ...l, secondary_email: data.learner.secondaryEmail } : l));
+            setEditingLoginEmailFor(null);
+            setMessage({ type: 'success', text: data.message });
+        } catch (err) {
+            setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed to save login email' });
+        } finally {
+            setSavingLoginEmail(false);
         }
     };
 
@@ -6104,10 +6138,40 @@ export const AssignStudentView: React.FC = () => {
                                                                 ) : (
                                                                     <div className="divide-y divide-gray-200 dark:divide-gray-700 rounded-md border border-gray-200 dark:border-gray-700 overflow-hidden max-w-2xl">
                                                                         {enrolledLearners.map(learner => (
-                                                                            <div key={learner.user_id} className="flex items-center justify-between px-3 py-2 bg-white dark:bg-gray-800">
-                                                                                <div>
+                                                                            <div key={learner.user_id} className="flex items-center justify-between gap-3 px-3 py-2 bg-white dark:bg-gray-800">
+                                                                                <div className="min-w-0 flex-1">
                                                                                     <p className="text-sm font-medium text-gray-900 dark:text-white">{learner.full_name}</p>
                                                                                     <p className="text-xs text-gray-500 dark:text-gray-400">{learner.email}</p>
+                                                                                    {editingLoginEmailFor === learner.user_id ? (
+                                                                                        <div className="mt-1 flex flex-wrap items-center gap-2">
+                                                                                            <input
+                                                                                                type="email"
+                                                                                                value={loginEmailDraft}
+                                                                                                onChange={e => setLoginEmailDraft(e.target.value)}
+                                                                                                onKeyDown={e => { if (e.key === 'Enter') handleSaveLoginEmail(learner, run); if (e.key === 'Escape') setEditingLoginEmailFor(null); }}
+                                                                                                placeholder="personal@gmail.com (blank = remove)"
+                                                                                                autoFocus
+                                                                                                className="w-64 max-w-full border border-gray-300 dark:border-gray-600 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white"
+                                                                                            />
+                                                                                            <Button onClick={() => handleSaveLoginEmail(learner, run)} disabled={savingLoginEmail} className="text-xs px-2 py-1">
+                                                                                                {savingLoginEmail ? 'Saving…' : 'Save'}
+                                                                                            </Button>
+                                                                                            <Button variant="ghost" onClick={() => setEditingLoginEmailFor(null)} disabled={savingLoginEmail} className="text-xs px-2 py-1">Cancel</Button>
+                                                                                        </div>
+                                                                                    ) : (
+                                                                                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                                                                                            {learner.secondary_email
+                                                                                                ? <>Also logs in with <span className="text-gray-700 dark:text-gray-300">{learner.secondary_email}</span> · </>
+                                                                                                : null}
+                                                                                            <button
+                                                                                                type="button"
+                                                                                                onClick={() => { setEditingLoginEmailFor(learner.user_id); setLoginEmailDraft(learner.secondary_email || ''); setMessage(null); }}
+                                                                                                className="text-blue-600 dark:text-blue-400 hover:underline"
+                                                                                            >
+                                                                                                {learner.secondary_email ? 'Edit login email' : '+ Personal login email'}
+                                                                                            </button>
+                                                                                        </p>
+                                                                                    )}
                                                                                 </div>
                                                                                 <Button
                                                                                     variant="ghost"
