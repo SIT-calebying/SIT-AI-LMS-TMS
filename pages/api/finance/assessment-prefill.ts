@@ -47,7 +47,7 @@ const normDateSql = (jsonPathExpr: string) => `(
  * live SSG view-enrolment call per affected row — the same call "Refresh from SSG" makes — and
  * persist the result so it's fixed for good, not just for this one preview.
  */
-async function refreshFromSsg(enrolmentIds: string[], ssgApp?: string): Promise<Map<string, any>> {
+async function refreshFromSsg(enrolmentIds: string[], ssgApp?: string, noPersist: Set<string> = new Set()): Promise<Map<string, any>> {
   const refreshed = new Map<string, any>();
   if (enrolmentIds.length === 0) return refreshed;
   try {
@@ -64,7 +64,9 @@ async function refreshFromSsg(enrolmentIds: string[], ssgApp?: string): Promise<
           const raw: any = viewResult.data;
           const rec = raw?.enrolment ?? raw;
           if (rec?.referenceNumber) {
-            await upsertSsgEnrolmentStaging(rec);
+            // Never write a deliberately masked NRIC back to the DB in full — use it for this
+            // preview only (see isMaskedNric).
+            if (!noPersist.has(id)) await upsertSsgEnrolmentStaging(rec);
             refreshed.set(id, rec);
           }
         }
@@ -78,6 +80,15 @@ async function refreshFromSsg(enrolmentIds: string[], ssgApp?: string): Promise<
   }
   return refreshed;
 }
+
+/**
+ * ssg_enrolments.trainee_nric is deliberately masked after the fact — "xxxxx123A" by the SFC
+ * import once invoices are Paid, "Sxxxx123A" by the auto-sanitise sweep. A masked value isn't
+ * blank, so it used to slip past the self-heal and go to SSG as the trainee ID, which SSG rejects
+ * with "TGS-403 - Please verify particulars of this trainee". Masks use lowercase 'x' or '*';
+ * real IDs are uppercase (a FIN may legitimately end in 'X').
+ */
+const isMaskedNric = (v: string | null) => !!v && /[x*]/.test(v);
 
 async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') {
@@ -111,12 +122,13 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
     const rows = result.rows as PrefillRow[];
 
     const needsRefresh = rows
-      .filter((r) => !r.trainee_nric?.trim() || !r.course_run_number?.trim())
+      .filter((r) => !r.trainee_nric?.trim() || isMaskedNric(r.trainee_nric) || !r.course_run_number?.trim())
       .map((r) => r.enrolment_id);
 
     if (needsRefresh.length > 0) {
       const ssgApp = (req.headers['x-ssg-app'] as string | undefined)?.trim() || undefined;
-      const refreshedById = await refreshFromSsg(needsRefresh, ssgApp);
+      const masked = new Set(rows.filter((r) => isMaskedNric(r.trainee_nric)).map((r) => r.enrolment_id));
+      const refreshedById = await refreshFromSsg(needsRefresh, ssgApp, masked);
       for (const row of rows) {
         const rec = refreshedById.get(row.enrolment_id);
         if (!rec) continue;

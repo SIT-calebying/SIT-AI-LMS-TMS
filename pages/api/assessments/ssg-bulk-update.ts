@@ -6,6 +6,7 @@ import { getTrainingPartnerIdentifiers } from '../../../lib/trainingPartnerIdent
 import { checkAssessmentEligibility } from '../../../lib/services/enrolmentEligibility';
 import { refreshSkillCode } from '../../../lib/ssg/courseSkillCode';
 import { pushFeeCollectionToTpg } from '../../../lib/ssg/pushFeeCollectionToTpg';
+import { createSSGEnrolmentAPI } from '../../../lib/ssg/api/enrolment-api';
 import crypto from 'crypto';
 
 interface BulkItem {
@@ -14,6 +15,8 @@ interface BulkItem {
   courseReferenceNumber: string;
   traineeFullName: string;
   traineeId: string;
+  /** Overrides first-letter detection — set only from SSG's own enrolment record. */
+  traineeIdType?: string;
   action: string;
   result: string;
   assessmentDate: string;
@@ -60,6 +63,47 @@ const formatDate = (isoString: string) => {
 // Whether an SSG error is about the skill code (so the self-repair pass can re-resolve it).
 const isSkillCodeError = (msg?: string) => !!msg && (/TGS-?425/i.test(msg) || /skill code/i.test(msg));
 
+// SSG's "TGS-403 - Please verify particulars of this trainee": the trainee ID / ID type / name we
+// sent doesn't match SSG's enrolment record (e.g. a masked or stale NRIC in ssg_enrolments).
+const isParticularsError = (msg?: string) => !!msg && (/TGS-?403/i.test(msg) || /verify particulars/i.test(msg));
+
+const toAssessmentIdType = (t?: string) => {
+  const u = (t || '').toUpperCase();
+  if (u.includes('FIN')) return 'FIN';
+  if (u.includes('NRIC')) return 'NRIC';
+  return u ? 'OTHERS' : undefined;
+};
+
+/**
+ * Rebuild an item's trainee/run particulars from SSG's own enrolment record. Returns null when
+ * SSG has nothing different from what was already sent (a retry would just fail the same way).
+ * Read-only — never persisted, so a deliberately masked NRIC in the DB stays masked.
+ */
+async function particularsFromSsg(item: BulkItem, ctx: SubmitCtx): Promise<BulkItem | null> {
+  const api = createSSGEnrolmentAPI(ctx.ssgBaseUrl, ctx.credentials);
+  const view = await api.viewEnrolment(item.enrolmentReferenceNumber);
+  if (view.error) return null;
+  const raw: any = view.data;
+  const rec = raw?.enrolment ?? raw;
+  const trainee = rec?.trainee || {};
+  const run = rec?.course?.run || {};
+  if (!trainee.id) return null;
+  const fixed: BulkItem = {
+    ...item,
+    traineeId: String(trainee.id),
+    traineeIdType: toAssessmentIdType(trainee.idType?.type),
+    traineeFullName: trainee.fullName || item.traineeFullName,
+    courseRunId: run.id ? String(run.id) : item.courseRunId,
+    courseReferenceNumber: rec?.course?.referenceNumber || item.courseReferenceNumber,
+  };
+  const same = fixed.traineeId === item.traineeId
+    && fixed.traineeFullName === item.traineeFullName
+    && fixed.courseRunId === String(item.courseRunId)
+    && fixed.courseReferenceNumber === item.courseReferenceNumber
+    && (!fixed.traineeIdType || fixed.traineeIdType === item.traineeIdType);
+  return same ? null : fixed;
+}
+
 /** Submit ONE assessment to SSG with the given skillCode. Pure SSG call — no DB/eligibility. */
 async function submitAssessment(item: BulkItem, skillCode: string, ctx: SubmitCtx): Promise<SubmitOutcome> {
   const { credentials, encKey, iv, uen, tpCode, ssgBaseUrl } = ctx;
@@ -67,6 +111,7 @@ async function submitAssessment(item: BulkItem, skillCode: string, ctx: SubmitCt
   let traineeIdType = 'OTHERS';
   if (firstChar === 'S' || firstChar === 'T') traineeIdType = 'NRIC';
   else if (firstChar === 'F' || firstChar === 'G' || firstChar === 'M') traineeIdType = 'FIN';
+  if (item.traineeIdType) traineeIdType = item.traineeIdType;
 
   // CASL courses have no SSG skill code. Send NO skillCode key at all for them — an empty string
   // is a value SSG would have to validate, whereas the field is optional when absent.
@@ -128,8 +173,9 @@ async function submitAssessment(item: BulkItem, skillCode: string, ctx: SubmitCt
  *
  * Silent self-repair: any row that fails on a skill-code error (TGS-425) triggers a fresh live
  * lookup of that course's skill code (correcting a stale/corrupt cache), and is re-submitted with
- * the corrected code. The caller only sees the FINAL result — a repaired-then-resubmitted row
- * shows success.
+ * the corrected code. Likewise a TGS-403 ("verify particulars of this trainee") row is
+ * re-submitted once with the trainee/run particulars from SSG's own enrolment record. The caller
+ * only sees the FINAL result — a repaired-then-resubmitted row shows success.
  */
 async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') {
@@ -243,6 +289,39 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
           }
         } catch { /* keep original failure */ }
       }
+    }
+
+    // ── Silent self-repair: TGS-403 rows get SSG's own trainee particulars + one retry ──
+    for (let idx = 0; idx < items.length; idx++) {
+      if (results[idx]?.status !== 'error' || !isParticularsError(results[idx]?.error)) continue;
+      const it = items[idx];
+      try {
+        const fixed = await particularsFromSsg(it, ctx);
+        if (!fixed) continue;   // SSG has the same particulars — leave the failure as-is
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        const retry = await submitAssessment(fixed, fixed.skillCode, ctx);
+        if (retry.status === 'success') {
+          const repairedResult: BulkResult = {
+            enrolmentReferenceNumber: it.enrolmentReferenceNumber,
+            traineeFullName: fixed.traineeFullName,
+            status: 'success',
+            assessmentReferenceNumber: retry.assessmentReferenceNumber,
+            assessmentDate: it.assessmentDate,
+            createdOn: retry.createdOn,
+            updatedOn: retry.updatedOn,
+          };
+          console.log(`🔧 Self-repaired ${it.enrolmentReferenceNumber} with SSG's trainee particulars`);
+          if (it.result === 'Pass' && it.enrolmentReferenceNumber) {
+            const feeResult = await pushFeeCollectionToTpg(it.enrolmentReferenceNumber);
+            if (feeResult.status === 'error') {
+              repairedResult.paymentWarning = `TPG payment status could not be updated: ${feeResult.message}`;
+            }
+          }
+          results[idx] = repairedResult;
+        } else if (retry.error) {
+          results[idx].error = retry.error;
+        }
+      } catch { /* keep original failure */ }
     }
 
     const successCount = results.filter((r) => r.status === 'success').length;
