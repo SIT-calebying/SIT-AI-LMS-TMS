@@ -34,6 +34,7 @@ import { MicrosoftCertificateView } from '../components/admin/MicrosoftCertifica
 import { CreateNewClassView } from '../components/admin/CreateNewClassView';
 import EnrollLearners from '../components/admin/EnrollLearners';
 import SearchPastLearners from '../components/admin/SearchPastLearners';
+import SearchTrainers from '../components/admin/SearchTrainers';
 import {
   ApplyNewGrantView,
   ViewGrantStatusView,
@@ -202,6 +203,7 @@ const PAGE_LABELS: Partial<Record<AdminPage, string>> = {
   [AdminPage.PastAttendance]: 'Past Attendance',
   [AdminPage.AssignStudent]: 'Assign Learners',
   [AdminPage.SearchPastLearners]: 'Search Past Learners',
+  [AdminPage.SearchTrainers]: 'Search Trainers',
   [AdminPage.AutomationLogs]: 'Automation Logging',
   [AdminPage.TrainerFolderLogs]: 'Auto Create Assessment Records Log',
   [AdminPage.CourseRunDateSyncLogs]: 'Course Run Date Sync Log',
@@ -374,6 +376,8 @@ const AdminLayout: React.FC = () => {
         return <AssignStudentView />;
       case AdminPage.SearchPastLearners:
         return <SearchPastLearners />;
+      case AdminPage.SearchTrainers:
+        return <SearchTrainers />;
       case AdminPage.AddCourse:
         return <AddCourseView />;
       case AdminPage.AddCourseRun:

@@ -118,6 +118,7 @@ export enum AdminPage {
   CourseSessionTiming = 'courseSessionTiming',
   AssignStudent = 'assignStudent',
   SearchPastLearners = 'searchPastLearners',
+  SearchTrainers = 'searchTrainers',
   CheckAttendance = 'checkAttendance',
   PastAttendance = 'pastAttendance',
   AutomationLogs = 'automationLogs',

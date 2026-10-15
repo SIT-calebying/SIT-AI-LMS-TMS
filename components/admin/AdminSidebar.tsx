@@ -229,6 +229,7 @@ const AdminSidebar: React.FC<AdminSidebarProps> = ({ onNavigate, onSelectWorkflo
                     <NavItem page={AdminPage.ViewLearners} label="View Learners" isSubItem />
                     <NavItem page={AdminPage.AssignStudent} label="Assign Learners" isSubItem />
                     <NavItem page={AdminPage.SearchPastLearners} label="Search Past Learners" isSubItem />
+                    <NavItem page={AdminPage.SearchTrainers} label="Search Trainers" isSubItem />
                 </SubSection>
             </NavSection>
 

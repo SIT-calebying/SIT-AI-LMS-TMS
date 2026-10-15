@@ -18,6 +18,7 @@ const ADMIN_ITEMS: AdminItem[] = [
   { id: AdminPage.ViewLearners, page: AdminPage.ViewLearners, label: 'View Learners', section: 'Class Management → Learners' },
   { id: AdminPage.AssignStudent, page: AdminPage.AssignStudent, label: 'Assign Learners', section: 'Class Management → Learners', keywords: ['students', 'enroll'] },
   { id: AdminPage.SearchPastLearners, page: AdminPage.SearchPastLearners, label: 'Search Past Learners', section: 'Class Management → Learners' },
+  { id: AdminPage.SearchTrainers, page: AdminPage.SearchTrainers, label: 'Search Trainers', section: 'Class Management → Trainers', keywords: ['trainer', 'phone', 'email', 'contact'] },
 
   { id: AdminPage.ViewCourses, page: AdminPage.ViewCourses, label: 'View Courses', section: 'Class Management' },
   { id: AdminPage.ViewTrainers, page: AdminPage.ViewTrainers, label: 'View Trainers', section: 'Class Management' },
