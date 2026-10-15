@@ -383,10 +383,26 @@ export async function processInvoiceJob(jobId: string, opts: { repair?: boolean 
   // raced that read and shipped invoices with the WSQ funding lines (and the GRN invoice,
   // which only fires when grant lines exist) silently missing whenever this was the first
   // grant fetch for the enrolment.
-  try {
-    await refreshGrantsForEnrolments([enrolmentId]);
-  } catch (e) {
-    console.warn('[invoice-job] Grant refresh failed (non-blocking):', e);
+  // refreshGrantsForEnrolments reports a failed TPG call in its result instead of throwing, and
+  // that used to be ignored: ENR-2610-071513 (2026-10-15) was invoiced without its $400 Baseline
+  // line or GRN invoice after one transient failure. Retry once, then fail the job (retryable)
+  // rather than bill without grants. Tenants without SSG credentials are unaffected.
+  const refreshGrantsOnce = async (): Promise<string | null> => {
+    try {
+      const r = (await refreshGrantsForEnrolments([enrolmentId]))[0];
+      return r && !r.success ? r.error || 'unknown error' : null;
+    } catch (e) {
+      console.warn('[invoice-job] Grant refresh threw (non-blocking):', e);
+      return null; // setup/config problem, not a TPG answer — keep the old non-blocking behaviour
+    }
+  };
+  let grantFailure = await refreshGrantsOnce();
+  if (grantFailure) {
+    await new Promise((r) => setTimeout(r, 3000));
+    grantFailure = await refreshGrantsOnce();
+  }
+  if (grantFailure && !/credentials not configured/i.test(grantFailure)) {
+    throw new Error(`Could not fetch grants from TPG (${grantFailure}) — invoice not created so it isn't billed without grant lines. Retry shortly.`);
   }
 
   // The course product comes first. Besides pricing the line it decides the

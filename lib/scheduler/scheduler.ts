@@ -310,6 +310,13 @@ async function seedDefaults() {
             api_endpoint: '/api/external/sync-ssg-enrolments',
         },
         {
+            id: 'sync_missing_grants',
+            name: 'Sync Missing Grants from TPG',
+            description: 'For every Confirmed enrolment with no grants stored locally, asks TPG for its grants (Baseline, MCES, etc.) and saves them, so Consolidated Finance Data shows each learner\'s grants. Never-checked enrolments go first; recent enrolments with no grant yet are rechecked every 12 hours for 45 days. Up to 60 enrolments per run, every 30 minutes.',
+            cron_expression: '*/30 * * * *', // Every 30 minutes
+            api_endpoint: '/api/external/sync-missing-grants',
+        },
+        {
             id: 'reconcile_enrolment_cancellations',
             name: 'Reconcile Enrolment Cancellations',
             description: 'For active local enrolments on recently-ended or near-future course runs, pulls the current status from TPGateway and writes cancellations/withdrawals back to the local enrolment record. Closes the gap where a learner cancels on TPG but the local status stays Confirmed (which previously let cancelled learners through assessment/certificate guards). Read-mostly: only propagates cancellations, never reactivates. Default 05:00 SGT daily.',
@@ -467,6 +474,10 @@ function getDirectHandler(taskId: string): TaskHandler | undefined {
         });
         directHandlers.set('sync_ssg_enrolments', async () => {
             const { runAutomation } = await import('../../pages/api/external/sync-ssg-enrolments');
+            return runAutomation();
+        });
+        directHandlers.set('sync_missing_grants', async () => {
+            const { runAutomation } = await import('../../pages/api/external/sync-missing-grants');
             return runAutomation();
         });
         directHandlers.set('reconcile_enrolment_cancellations', async () => {

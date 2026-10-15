@@ -2606,7 +2606,8 @@ CREATE TABLE public.ssg_enrolments (
     total_grant_pending numeric(10,2),
     grant_payment_status public.grant_payment_status,
     last_grant_import_at timestamp with time zone,
-    personal_data_masked boolean DEFAULT false NOT NULL
+    personal_data_masked boolean DEFAULT false NOT NULL,
+    grants_checked_at timestamp with time zone
 );
 
 
@@ -4944,6 +4945,20 @@ CREATE INDEX idx_ssg_enrolments_grant_payment_status ON public.ssg_enrolments US
 --
 
 CREATE INDEX idx_ssg_enrolments_last_grant_import_at ON public.ssg_enrolments USING btree (last_grant_import_at DESC);
+
+
+--
+-- Name: idx_ssg_enrolments_nric_run; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ssg_enrolments_nric_run ON public.ssg_enrolments USING btree (trainee_nric, (((raw_data -> 'course'::text) -> 'run'::text) ->> 'id'::text));
+
+
+--
+-- Name: idx_ssg_grants_enrollment_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ssg_grants_enrollment_id ON public.ssg_grants USING btree (enrollment_id);
 
 
 --

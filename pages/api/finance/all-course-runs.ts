@@ -5,6 +5,7 @@ import { ensureInvoiceJobsTable } from '../../../lib/services/invoiceJobs';
 import { upsertSsgEnrolmentFromLocalEnrollment } from '../../../lib/services/billingSync';
 import { ensureSsgEnrolmentGrantRollupColumns } from '../../../lib/services/grantImport/ensureSsgEnrolmentGrantRollups';
 import { reconcileConsolidatedFinanceEnrolmentsThrottled } from '../../../lib/services/consolidatedFinanceSync';
+import { syncGrantsForShownRows } from '../../../lib/services/missingGrantSync';
 
 /** Normalized course run start date as YYYY-MM-DD text (matches sync-all-course-runs-from-ssg). */
 const RUN_START_NORM_SQL = `(
@@ -90,6 +91,25 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
 
     // Build WHERE conditions — always exclude incomplete rows
     const conditions: string[] = ['se.enrolment_id IS NOT NULL'];
+    // When a trainee has TWO ssg_enrolments rows for the same course run (SSG cancelled their
+    // original enrolment and re-confirmed them under a new reference number — seen 2026-10-14),
+    // hide the older one. NOT based on enrolment_status: the cached status for the dead reference
+    // stays stale as "Confirmed" forever (nothing ever re-syncs a cancelled/orphaned enrolment_id
+    // once it's been superseded), so the two duplicates are indistinguishable by status alone.
+    // SSG's enrolment reference numbers are sequential — a later ("ENR-2610-049598" >
+    // "ENR-2610-030403") reference for the same trainee_nric + course run always supersedes the
+    // earlier one. Otherwise admins can select the dead reference (assessment still "succeeds"
+    // against it, but the Full Payment push fails with "Enrolment cannot be updated").
+    conditions.push(`NOT (
+      NULLIF(TRIM(COALESCE(se.trainee_nric, '')), '') IS NOT NULL
+      AND NULLIF(TRIM(COALESCE(se.raw_data->'course'->'run'->>'id', '')), '') IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM ssg_enrolments se2
+        WHERE se2.enrolment_id > se.enrolment_id
+          AND se2.trainee_nric = se.trainee_nric
+          AND se2.raw_data->'course'->'run'->>'id' = se.raw_data->'course'->'run'->>'id'
+      )
+    )`);
     const params: (string | number)[] = [];
     let paramIndex = 1;
 
@@ -216,17 +236,23 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
              AND TRIM(ij.qbo_doc_number) NOT ILIKE 'GRN-%'
             THEN TRIM(ij.qbo_doc_number)
           END,
-          NULLIF(TRIM(COALESCE(ij.qbo_invoice_id::text, '')), '')
+          NULLIF(TRIM(COALESCE(ij.qbo_invoice_id::text, '')), ''),
+          CASE WHEN ca_chk.doc_ok THEN ca_chk.invoice_doc_number END
         ) AS invoice_no,
         ij.invoice_sent_at AS invoice_sent_at,
         ij.qbo_sfc_status AS qbo_sfc_status,
         COALESCE(
           ij.grn_doc_number,
           CASE WHEN TRIM(COALESCE(ij.invoice_no, '')) ILIKE 'GRN-%' THEN TRIM(ij.invoice_no) END,
-          CASE WHEN TRIM(COALESCE(ij.qbo_doc_number, '')) ILIKE 'GRN-%' THEN TRIM(ij.qbo_doc_number) END
+          CASE WHEN TRIM(COALESCE(ij.qbo_doc_number, '')) ILIKE 'GRN-%' THEN TRIM(ij.qbo_doc_number) END,
+          CASE WHEN ca_chk.doc_ok THEN ca_chk.grant_invoice_doc_number END
         ) AS grn_doc_number,
-        ij.drive_web_view_link AS invoice_drive_web_view_link,
-        COALESCE(ij.grn_drive_web_view_link, da_chk.grant_invoice_drive_web_view_link) AS grn_drive_web_view_link,
+        COALESCE(ij.drive_web_view_link, CASE WHEN ca_chk.doc_ok THEN ca_chk.invoice_drive_web_view_link END) AS invoice_drive_web_view_link,
+        COALESCE(
+          ij.grn_drive_web_view_link,
+          da_chk.grant_invoice_drive_web_view_link,
+          CASE WHEN ca_chk.doc_ok THEN ca_chk.grant_invoice_drive_web_view_link END
+        ) AS grn_drive_web_view_link,
         (da_chk.found IS NOT NULL) AS is_da,
         da_chk.da_application_id,
         da_chk.sfc_invoice_id,
@@ -287,7 +313,14 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         LIMIT 1
       ) da_chk ON true
       LEFT JOIN LATERAL (
-        SELECT 1 AS found, ca.id AS company_application_id
+        SELECT 1 AS found, ca.id AS company_application_id,
+               -- The company flow keeps its documents on company_application; use them when they
+               -- describe the same QB invoice as the row's job (or the row has no job yet).
+               (ij.qbo_invoice_id IS NULL OR TRIM(COALESCE(ca.invoice_id::text, '')) = TRIM(ij.qbo_invoice_id::text)) AS doc_ok,
+               NULLIF(TRIM(ca.invoice_doc_number), '') AS invoice_doc_number,
+               ca.invoice_drive_web_view_link,
+               NULLIF(TRIM(ca.grant_invoice_doc_number), '') AS grant_invoice_doc_number,
+               ca.grant_invoice_drive_web_view_link
         FROM public.company_application ca
         WHERE LOWER(TRIM(COALESCE(ca.enrolment_id,''))) = LOWER(TRIM(COALESCE(se.enrolment_id,'')))
         LIMIT 1
@@ -375,10 +408,20 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
       pool.query(statusBreakdownQuery),
     ]);
 
+    // Rows on this page with no grants stored: ask TPG for just those (a new enrolment, or one
+    // whose earlier pull failed) and re-read the page if any came back. Bounded to ~4s.
+    let rows = dataResult.rows;
+    const rowsWithoutGrants = rows
+      .filter((r: { bl_grant_id?: string | null; nbl_grant_id?: string | null }) => !r.bl_grant_id && !r.nbl_grant_id)
+      .map((r: { enrolment_id: string }) => r.enrolment_id);
+    if (rowsWithoutGrants.length > 0 && (await syncGrantsForShownRows(rowsWithoutGrants))) {
+      rows = (await pool.query(dataQuery, params)).rows;
+    }
+
     return res.status(200).json({
       success: true,
       data: {
-        rows: dataResult.rows,
+        rows,
         total: Number(countResult.rows[0]?.total ?? 0),
         page,
         limit,

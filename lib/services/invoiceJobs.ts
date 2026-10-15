@@ -37,7 +37,24 @@ export interface InvoiceJobRow {
   last_attempt_at: string | null;
 }
 
-export async function ensureInvoiceJobsTable(): Promise<void> {
+const gEnsure = globalThis as unknown as { __invoiceJobsTableEnsured?: Promise<void> };
+
+/**
+ * Runs the schema guard once per process. `ALTER TABLE … ADD COLUMN IF NOT EXISTS` still takes an
+ * ACCESS EXCLUSIVE lock even when the column exists, so running it on every request made each
+ * caller queue behind any long query on invoice_jobs — and every later read queue behind it.
+ */
+export function ensureInvoiceJobsTable(): Promise<void> {
+  if (!gEnsure.__invoiceJobsTableEnsured) {
+    gEnsure.__invoiceJobsTableEnsured = ensureInvoiceJobsTableNow().catch((e) => {
+      gEnsure.__invoiceJobsTableEnsured = undefined;
+      throw e;
+    });
+  }
+  return gEnsure.__invoiceJobsTableEnsured;
+}
+
+async function ensureInvoiceJobsTableNow(): Promise<void> {
   await pool.query(
     `CREATE TABLE IF NOT EXISTS public.invoice_jobs (
       id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
