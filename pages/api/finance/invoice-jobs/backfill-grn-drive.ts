@@ -14,25 +14,44 @@ import { processInvoiceJob } from '@/lib/services/invoiceJobProcessor';
  *
  *   1. Invoice PDF missing   → fetch the customer invoice PDF from QB, upload to Drive.
  *   2. GRN PDF missing       → find the GRN invoice in QB, upload its PDF.
- *   3. GRN invoice missing   → (non-DA, generated jobs only) re-run the invoice processor in
- *                              repair mode, which creates the GRN invoice + PDFs but never a
- *                              new customer invoice.
+ *   3. GRN invoice missing   → reported in `missingGrn`. Only when the caller explicitly sends
+ *                              `{ createMissingGrn: true }` (a Finance user clicking the button)
+ *                              is the invoice processor re-run in repair mode for non-DA jobs
+ *                              (generated or hand-made), which creates the GRN invoice + PDFs but never a
+ *                              new customer invoice. A grant Cancelled in ssg_grants is never
+ *                              re-created.
  *
- * Called silently on Consolidated Finance page mount. Bounded per call; jobs touched in the
- * last 10 minutes are skipped (their own post-steps may still be running) and a failed
- * repair is not retried for 6 hours.
+ * Called silently on Consolidated Finance page mount, where it must never create a QuickBooks
+ * invoice: a GRN invoice can be missing because Finance deleted it on purpose (e.g. the grant
+ * was cancelled on TPG), and page load cannot tell that apart from a failed post-step.
+ * Bounded per call; jobs touched in the last 10 minutes are skipped (their own post-steps may
+ * still be running) and a failed repair is not retried for 6 hours.
  */
-const PDF_LIMIT = 10;
+const PDF_LIMIT = 20;
 const REPAIR_LIMIT = 3;
 const REPAIR_FAILED_PREFIX = 'Document repair failed:';
 
 const g = globalThis as unknown as { __invoiceDocRepairRunning?: boolean };
 
+/**
+ * Look the GRN up in every QB company that answers. A company whose connection is broken
+ * (e.g. an expired app2 token) is skipped rather than failing the lookup; if none answer,
+ * throw — "not found" must only be concluded from a company that actually replied.
+ */
 async function findGrnInvoice(apps: string[], grnRef: string): Promise<{ id: string; app: string } | null> {
+  let answered = 0;
+  let lastError: unknown = null;
   for (const app of apps) {
-    const inv = await qboFindInvoiceByDocNumber(app, grnRef);
-    if (inv?.id) return { id: inv.id, app };
+    try {
+      const inv = await qboFindInvoiceByDocNumber(app, grnRef);
+      answered++;
+      if (inv?.id) return { id: inv.id, app };
+    } catch (e) {
+      lastError = e;
+      console.warn(`[backfill-grn-drive] QB ${app} lookup failed for ${grnRef}:`, e instanceof Error ? e.message : e);
+    }
   }
+  if (answered === 0) throw lastError instanceof Error ? lastError : new Error('QuickBooks unreachable');
   return null;
 }
 
@@ -52,9 +71,13 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
     const appOverride = (process.env.QBO_GRANT_IMPORT_APP || process.env.QUICKBOOKS_DEFAULT_APP || 'app1').trim() || 'app1';
     const apps: string[] = appOverride === 'app2' ? ['app2', 'app1'] : ['app1', 'app2'];
 
+    const createMissingGrn = req.body?.createMissingGrn === true;
+
     let resolved = 0;
     let failed = 0;
     const failedRefs: string[] = [];
+    const missingGrn: string[] = [];
+    const cancelledGrn: string[] = [];
 
     const settledAndNotBackedOff = `
       updated_at < now() - interval '10 minutes'
@@ -67,6 +90,9 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
          FROM public.invoice_jobs
         WHERE status = 'done' AND qbo_invoice_id IS NOT NULL AND drive_web_view_link IS NULL
           AND invoice_no IS NOT NULL AND ${settledAndNotBackedOff}
+          -- Company group invoices: the company_application row already holds the PDF.
+          AND NOT EXISTS (SELECT 1 FROM public.company_application c
+                           WHERE TRIM(c.invoice_id::text) = public.invoice_jobs.qbo_invoice_id::text)
         ORDER BY updated_at DESC
         LIMIT ${PDF_LIMIT}`
     )).rows as Array<{ id: string; qbo_invoice_id: string; doc: string }>;
@@ -90,9 +116,16 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
     // ── 2 + 3. GRN PDF missing (and GRN invoice possibly never created) ─────────
     const grnRows = (await pool.query(
       `SELECT ij.id::text AS id, ij.grn_doc_number::text AS grn_doc_number,
+              -- Generated and hand-made (qb_manual_link) invoices are repaired the same way; DA
+              -- (own grant-invoice flow) and company group invoices are not.
               (ij.invoice_no IS NOT NULL
                AND NOT EXISTS (SELECT 1 FROM public.da_application d
-                                WHERE UPPER(TRIM(d.enrolment_id)) = UPPER(TRIM(ij.enrolment_id)))) AS repairable
+                                WHERE UPPER(TRIM(d.enrolment_id)) = UPPER(TRIM(ij.enrolment_id)))
+               AND NOT EXISTS (SELECT 1 FROM public.company_application c
+                                WHERE TRIM(c.invoice_id::text) = ij.qbo_invoice_id::text)) AS repairable,
+              EXISTS (SELECT 1 FROM public.ssg_grants sg
+                       WHERE UPPER(TRIM(sg.grant_id)) = UPPER(TRIM(ij.grn_doc_number))
+                         AND sg.status = 'Cancelled') AS grant_cancelled
          FROM public.invoice_jobs ij
         WHERE ij.status = 'done'
           AND NULLIF(TRIM(ij.grn_doc_number), '') IS NOT NULL
@@ -100,7 +133,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
           AND ${settledAndNotBackedOff.replace(/updated_at/g, 'ij.updated_at').replace(/last_error/g, 'ij.last_error')}
         ORDER BY ij.updated_at DESC
         LIMIT ${PDF_LIMIT}`
-    )).rows as Array<{ id: string; grn_doc_number: string; repairable: boolean }>;
+    )).rows as Array<{ id: string; grn_doc_number: string; repairable: boolean; grant_cancelled: boolean }>;
 
     let repairs = 0;
     for (const row of grnRows) {
@@ -116,7 +149,16 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
           resolved++;
           continue;
         }
-        // GRN invoice was never created in QB — finish the job's post-steps.
+        // GRN invoice is not in QB. Never re-create a cancelled grant; otherwise only report it
+        // unless a Finance user explicitly asked to create the missing ones.
+        if (row.grant_cancelled) {
+          cancelledGrn.push(row.grn_doc_number);
+          continue;
+        }
+        if (!createMissingGrn) {
+          missingGrn.push(row.grn_doc_number);
+          continue;
+        }
         if (!row.repairable || repairs >= REPAIR_LIMIT) {
           failed++;
           failedRefs.push(row.grn_doc_number);
@@ -149,7 +191,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
 
     return res.status(200).json({
       success: true,
-      data: { resolved, failed, total: tcRows.length + grnRows.length, failedRefs },
+      data: { resolved, failed, total: tcRows.length + grnRows.length, failedRefs, missingGrn, cancelledGrn },
     });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Internal server error';

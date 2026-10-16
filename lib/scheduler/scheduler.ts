@@ -317,6 +317,13 @@ async function seedDefaults() {
             api_endpoint: '/api/external/sync-missing-grants',
         },
         {
+            id: 'refresh_tpg_statuses',
+            name: 'Refresh Grant & SFC Claim Status from TPG',
+            description: 'Keeps the Financial Dashboard\'s Grants and Claims tabs on their live TPG status. Re-reads grants that are not final yet (Processing / Pending Review / Pending Payment) and SFC claims that are not Paid / Cancelled / Rejected, oldest-checked first, at most once every 6 hours each. Paid and cancelled records are never re-read. Up to 60 enrolments\' grants and 40 claims per run, every 30 minutes.',
+            cron_expression: '15,45 * * * *', // Every 30 minutes, offset from sync_missing_grants
+            api_endpoint: '/api/external/refresh-tpg-statuses',
+        },
+        {
             id: 'reconcile_enrolment_cancellations',
             name: 'Reconcile Enrolment Cancellations',
             description: 'For active local enrolments on recently-ended or near-future course runs, pulls the current status from TPGateway and writes cancellations/withdrawals back to the local enrolment record. Closes the gap where a learner cancels on TPG but the local status stays Confirmed (which previously let cancelled learners through assessment/certificate guards). Read-mostly: only propagates cancellations, never reactivates. Default 05:00 SGT daily.',
@@ -478,6 +485,10 @@ function getDirectHandler(taskId: string): TaskHandler | undefined {
         });
         directHandlers.set('sync_missing_grants', async () => {
             const { runAutomation } = await import('../../pages/api/external/sync-missing-grants');
+            return runAutomation();
+        });
+        directHandlers.set('refresh_tpg_statuses', async () => {
+            const { runAutomation } = await import('../../pages/api/external/refresh-tpg-statuses');
             return runAutomation();
         });
         directHandlers.set('reconcile_enrolment_cancellations', async () => {

@@ -69,6 +69,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         sg.component_description,
         sg.estimated_grant_amount,
         sg.approved_grant_amount,
+        sg.imported_at AS tpg_checked_at,
         se.trainee_name AS se_trainee_name,
         se.trainee_nric AS se_trainee_nric,
         se.raw_data AS se_raw_data,
@@ -267,4 +268,4 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
   }
 }
 
-export default withAuth(handler, { roles: ['admin', 'trainingProvider'] });
+export default withAuth(handler, { roles: ['admin', 'trainingProvider', 'finance'] });

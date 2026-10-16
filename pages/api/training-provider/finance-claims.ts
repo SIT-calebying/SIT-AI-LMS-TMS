@@ -1,6 +1,7 @@
 import { withAuth } from '@lib/auth/withAuth';
 import type { NextApiRequest, NextApiResponse } from 'next';
 import pool from '../../../lib/db';
+import { ensureClaimCheckedColumn } from '@/lib/services/tpgStatusRefresh';
 
 async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'GET') {
@@ -9,6 +10,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
   }
 
   try {
+    await ensureClaimCheckedColumn();
     const page = parseInt(req.query.page as string) || 0;
     const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
     const search = (req.query.search as string || '').trim();
@@ -53,7 +55,8 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         sc.claim_amount,
         sc.submission_date,
         sc.approval_date,
-        sc.payment_date
+        sc.payment_date,
+        sc.tpg_checked_at
       FROM ssg_claims sc
       ${whereClause}
       ORDER BY sc.submission_date ${sort} NULLS LAST
@@ -73,7 +76,8 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
       SELECT
         COUNT(*) as total_claims,
         COALESCE(SUM(claim_amount), 0) as total_amount,
-        COALESCE(SUM(CASE WHEN claim_status = 'Disbursed' THEN claim_amount ELSE 0 END), 0) as total_disbursed
+        -- TPG's live status for a paid-out claim is "Paid"; older report imports said "Disbursed".
+        COALESCE(SUM(CASE WHEN claim_status IN ('Disbursed', 'Paid') THEN claim_amount ELSE 0 END), 0) as total_disbursed
       FROM ssg_claims
     `;
 
@@ -115,4 +119,4 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
   }
 }
 
-export default withAuth(handler, { roles: ['admin', 'trainingProvider'] });
+export default withAuth(handler, { roles: ['admin', 'trainingProvider', 'finance'] });

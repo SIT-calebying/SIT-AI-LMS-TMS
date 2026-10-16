@@ -15,6 +15,7 @@ interface GrantRow {
   approved_grant_amount: number | null;
   trainee_name: string | null;
   trainee_nric: string | null;
+  tpg_checked_at: string | null;
 }
 
 interface ClaimRow {
@@ -29,6 +30,7 @@ interface ClaimRow {
   submission_date: string | null;
   approval_date: string | null;
   payment_date: string | null;
+  tpg_checked_at: string | null;
 }
 
 interface StatusCount {
@@ -62,20 +64,48 @@ const formatDate = (dateStr: string | null): string => {
   return date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
 };
 
-const statusColor = (status: string): string => {
-  const s = status.toLowerCase();
-  if (s.includes('completed') || s.includes('disbursed'))
-    return 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300';
-  if (s.includes('cancelled'))
-    return 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300';
-  if (s.includes('rejected') || s.includes('refunded'))
-    return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400';
-  if (s.includes('pending') || s.includes('ready'))
-    return 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300';
-  if (s.includes('processing') || s.includes('approved'))
-    return 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300';
-  return 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300';
+type LiveStatus = 'Paid' | 'Pending' | 'Cancelled';
+
+const LIVE_STATUS_STYLE: Record<LiveStatus, string> = {
+  Paid: 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300',
+  Pending: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300',
+  Cancelled: 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300',
 };
+
+/** TPG grant status → Paid / Pending / Cancelled. TPG marks a paid grant "Completed" with a paid amount. */
+const grantLiveStatus = (status: string, paid: number | null): LiveStatus => {
+  const s = (status || '').toLowerCase();
+  if (s.includes('cancel')) return 'Cancelled';
+  if (s.includes('completed') || s.includes('disbursed') || (paid ?? 0) > 0) return 'Paid';
+  return 'Pending';
+};
+
+/** TPG SFC claim status → Paid / Pending / Cancelled. */
+const claimLiveStatus = (status: string): LiveStatus => {
+  const s = (status || '').toLowerCase();
+  if (s.includes('paid') || s.includes('disbursed')) return 'Paid';
+  if (s.includes('cancel') || s.includes('reject') || s.includes('lapse') || s.includes('withdraw')) return 'Cancelled';
+  return 'Pending';
+};
+
+const checkedAgo = (iso: string | null): string => {
+  if (!iso) return 'not checked with TPG yet';
+  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (!Number.isFinite(mins)) return '';
+  if (mins < 1) return 'checked just now';
+  if (mins < 60) return `checked ${mins}m ago`;
+  if (mins < 48 * 60) return `checked ${Math.round(mins / 60)}h ago`;
+  return `checked ${Math.round(mins / 1440)}d ago`;
+};
+
+const LiveStatusCell: React.FC<{ live: LiveStatus; tpgStatus: string; checkedAt: string | null }> = ({ live, tpgStatus, checkedAt }) => (
+  <div className="flex flex-col gap-0.5">
+    <span className={`inline-block w-fit px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${LIVE_STATUS_STYLE[live]}`}>{live}</span>
+    <span className="text-[11px] text-on-surface-secondary whitespace-nowrap" title={checkedAt ? new Date(checkedAt).toLocaleString('en-SG') : ''}>
+      {tpgStatus && tpgStatus.toLowerCase() !== live.toLowerCase() ? `${tpgStatus} · ` : ''}{checkedAgo(checkedAt)}
+    </span>
+  </div>
+);
 
 const PAGE_SIZE = 20;
 
@@ -109,6 +139,8 @@ const FinanceManagementView: React.FC = () => {
   const [claimsLoading, setClaimsLoading] = useState(false);
 
   const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshNote, setRefreshNote] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
   // Debounce search
@@ -176,6 +208,34 @@ const FinanceManagementView: React.FC = () => {
     else fetchClaims();
   }, [activeTab, fetchGrants, fetchClaims]);
 
+  // Re-read the rows on screen from TPG now (the scheduled job keeps the rest current).
+  const refreshFromTpg = async () => {
+    const body = activeTab === 'grants'
+      ? { enrolmentIds: Array.from(new Set(grants.map(g => g.enrollment_id).filter(Boolean))) }
+      : { claimIds: claims.map(c => c.claim_id).filter(Boolean) };
+    setRefreshing(true);
+    setRefreshNote(null);
+    setError(null);
+    try {
+      const res = await fetch('/api/finance/tpg-status-refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.success) throw new Error(json?.error || 'Refresh from TPG failed');
+      const d = json.data;
+      setRefreshNote(activeTab === 'grants'
+        ? `Checked ${d.grants.checked} enrolment(s) with TPG${d.grants.failed ? `, ${d.grants.failed} failed` : ''}.`
+        : `Checked ${d.claims.checked} claim(s) with TPG, ${d.claims.changed} changed${d.claims.failed ? `, ${d.claims.failed} failed` : ''}.`);
+      if (activeTab === 'grants') await fetchGrants(); else await fetchClaims();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Refresh from TPG failed');
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   const isLoading = activeTab === 'grants' ? grantsLoading : claimsLoading;
   const total = activeTab === 'grants' ? grantsTotal : claimsTotal;
   const totalPages = Math.ceil(total / PAGE_SIZE);
@@ -192,7 +252,7 @@ const FinanceManagementView: React.FC = () => {
       </div>
 
       {/* Tab Toggle */}
-      <div className="flex gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <button
           onClick={() => setActiveTab('grants')}
           className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
@@ -213,6 +273,17 @@ const FinanceManagementView: React.FC = () => {
         >
           Claims
         </button>
+        <div className="ml-auto flex items-center gap-3">
+          {refreshNote && <span className="text-xs text-on-surface-secondary">{refreshNote}</span>}
+          <button
+            onClick={refreshFromTpg}
+            disabled={refreshing || isLoading || (activeTab === 'grants' ? grants.length === 0 : claims.length === 0)}
+            title="Re-read the status of the rows shown below from TPG now"
+            className="px-4 py-2 rounded-lg text-sm font-medium bg-surface-elevated text-on-surface border border-default hover:bg-surface-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {refreshing ? 'Checking TPG…' : 'Refresh from TPG'}
+          </button>
+        </div>
       </div>
 
       {/* KPI Cards */}
@@ -304,7 +375,7 @@ const FinanceManagementView: React.FC = () => {
                   <th className="text-left px-4 py-3 font-medium text-on-surface-secondary">Status</th>
                   <th className="text-left px-4 py-3 font-medium text-on-surface-secondary">Funding Scheme</th>
                   <th className="text-right px-4 py-3 font-medium text-on-surface-secondary">Estimated</th>
-                  <th className="text-right px-4 py-3 font-medium text-on-surface-secondary">Approved</th>
+                  <th className="text-right px-4 py-3 font-medium text-on-surface-secondary" title="Amount TPG has paid for this grant">Paid</th>
                 </tr>
               </thead>
               <tbody>
@@ -335,9 +406,11 @@ const FinanceManagementView: React.FC = () => {
                     <td className="px-4 py-3 text-on-surface-secondary font-mono text-xs whitespace-nowrap">{g.enrollment_id || '-'}</td>
                     <td className="px-4 py-3 text-on-surface-secondary font-mono text-xs whitespace-nowrap">{g.grant_id}</td>
                     <td className="px-4 py-3">
-                      <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${statusColor(g.status)}`}>
-                        {g.status?.replace('Grant Processing', 'Processing').replace('Grant ', '') || '-'}
-                      </span>
+                      <LiveStatusCell
+                        live={grantLiveStatus(g.status, g.approved_grant_amount)}
+                        tpgStatus={g.status?.replace('Grant Processing', 'Processing').replace('Grant ', '') || ''}
+                        checkedAt={g.tpg_checked_at}
+                      />
                     </td>
                     <td className="px-4 py-3 text-on-surface-secondary text-xs max-w-[200px] truncate" title={g.funding_scheme_description}>
                       {g.funding_scheme_description || '-'}
@@ -392,9 +465,7 @@ const FinanceManagementView: React.FC = () => {
                     <td className="px-4 py-3 text-on-surface-secondary font-mono text-xs">{c.enrollment_id || '-'}</td>
                     <td className="px-4 py-3 text-on-surface-secondary text-xs">{c.course_reference || '-'}</td>
                     <td className="px-4 py-3">
-                      <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${statusColor(c.claim_status)}`}>
-                        {c.claim_status}
-                      </span>
+                      <LiveStatusCell live={claimLiveStatus(c.claim_status)} tpgStatus={c.claim_status || ''} checkedAt={c.tpg_checked_at} />
                     </td>
                     <td className="px-4 py-3 text-right text-on-surface tabular-nums">{formatCurrency(c.claim_amount)}</td>
                     <td className="px-4 py-3 text-on-surface-secondary text-xs">{formatDate(c.submission_date)}</td>

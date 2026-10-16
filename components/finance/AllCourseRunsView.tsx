@@ -379,6 +379,10 @@ const AllCourseRunsView: React.FC = () => {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Generated invoices whose GRN invoice is not in QuickBooks. Page load only reports them;
+  // creating them is an explicit Finance action (a missing GRN may have been deleted on purpose).
+  const [missingGrn, setMissingGrn] = useState<string[]>([]);
+  const [creatingGrn, setCreatingGrn] = useState(false);
   const [syncToast, setSyncToast] = useState<string | null>(null);
   // Import Course Run modal (Finance)
   const [showImportModal, setShowImportModal] = useState(false);
@@ -482,14 +486,15 @@ const AllCourseRunsView: React.FC = () => {
         // silent — never blocks the UI
       }
 
-      // Finish any generated invoice whose documents are incomplete: invoice PDF, GRN PDF,
-      // or a GRN invoice that was never created (replaces the old "Sync GRN PDFs" button).
+      // Upload any missing invoice / GRN PDFs. GRN invoices missing from QuickBooks are only
+      // reported here — creating them needs the explicit button below.
       try {
         const grnRes = await fetch('/api/finance/invoice-jobs/backfill-grn-drive', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
         });
         const grnJson = await grnRes.json();
+        if (grnRes.ok) setMissingGrn(Array.isArray(grnJson?.data?.missingGrn) ? grnJson.data.missingGrn : []);
         if (grnRes.ok && grnJson?.data?.resolved > 0) await fetchData();
       } catch {
         // silent
@@ -1065,6 +1070,47 @@ const AllCourseRunsView: React.FC = () => {
       {error && (
         <div className="p-3 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 rounded-lg text-sm">
           {error}
+        </div>
+      )}
+
+      {missingGrn.length > 0 && (
+        <div className="p-3 rounded-lg text-sm bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200 border border-amber-200 dark:border-amber-800">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <div>
+              <div className="font-medium">
+                {missingGrn.length} generated invoice{missingGrn.length > 1 ? 's are' : ' is'} missing the GRN invoice in QuickBooks.
+              </div>
+              <div className="text-[11px] opacity-80">
+                {missingGrn.join(', ')} — create them only if they were not deleted on purpose.
+              </div>
+            </div>
+            <button
+              type="button"
+              disabled={creatingGrn}
+              onClick={async () => {
+                setCreatingGrn(true);
+                try {
+                  const res = await fetch('/api/finance/invoice-jobs/backfill-grn-drive', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ createMissingGrn: true }),
+                  });
+                  const json = await res.json();
+                  if (!res.ok || !json?.success) throw new Error(json?.error || 'Failed to create GRN invoices');
+                  // Anything still not created (repair limit per click, or a failed repair) stays listed.
+                  setMissingGrn(Array.isArray(json.data?.failedRefs) ? json.data.failedRefs.filter((r: string) => /^GRN-/i.test(r)) : []);
+                  if (json.data?.resolved > 0) await fetchData();
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : 'Failed to create GRN invoices');
+                } finally {
+                  setCreatingGrn(false);
+                }
+              }}
+              className="shrink-0 px-3 py-1.5 rounded-md text-xs font-medium bg-amber-600 hover:bg-amber-700 text-white disabled:opacity-60"
+            >
+              {creatingGrn ? 'Creating…' : 'Create missing GRN invoices'}
+            </button>
+          </div>
         </div>
       )}
 
