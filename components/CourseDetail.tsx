@@ -1,5 +1,6 @@
 import { displayCourseCodes } from '@lib/utils/courseCodes';
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useLms } from '@contexts/LmsContext';
 import { Button } from './ui/Button';
 import { Icon, IconName } from './ui/Icon';
@@ -2463,6 +2464,19 @@ export const CourseDetail: React.FC = () => {
     const [latestQuizScores, setLatestQuizScores] = useState<Record<string, { score: number; total: number }>>({});
     const [isAttendanceOpen, setIsAttendanceOpen] = useState(false);
     const [isTraqomOpen, setIsTraqomOpen] = useState(false);
+    // Full-window QR view so a trainer can project the feedback/TRAQOM code to the class.
+    const [zoomedQr, setZoomedQr] = useState<null | 'feedback' | 'traqom'>(null);
+    useEffect(() => {
+        if (!zoomedQr) return;
+        const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setZoomedQr(null); };
+        window.addEventListener('keydown', onKey);
+        const prevOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        return () => {
+            window.removeEventListener('keydown', onKey);
+            document.body.style.overflow = prevOverflow;
+        };
+    }, [zoomedQr]);
     const [isCourseMenuOpen, setIsCourseMenuOpen] = useState(false);
     const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(false);
 
@@ -3462,13 +3476,22 @@ export const CourseDetail: React.FC = () => {
                                                                     {/* Certificate Delivery Card */}
                                                     {trainingProviderProfile?.showCertificateDelivery && (
                                                     <div className="flex flex-col rounded-xl border border-default overflow-hidden">
-                                                        <div className="bg-blue-600 px-4 py-2.5 flex items-center justify-center gap-2">
+                                                        <div className="relative bg-blue-600 px-4 py-2.5 flex items-center justify-center gap-2">
                                                             <Icon name={IconName.ClipboardCheck} className="w-4 h-4 text-white flex-shrink-0" />
                                                             <span className="text-sm font-semibold text-white">Course Feedback</span>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setZoomedQr('feedback')}
+                                                                className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-md text-white hover:bg-white/20 transition-colors"
+                                                                title="Show QR code full screen"
+                                                                aria-label="Show Course Feedback QR code full screen"
+                                                            >
+                                                                <Icon name={IconName.ZoomIn} className="w-5 h-5" />
+                                                            </button>
                                                         </div>
                                                         <div className="flex flex-col items-center p-5 bg-surface flex-1 justify-between gap-3">
                                                             <div className="flex flex-col items-center gap-3 w-full">
-                                                                <div className="bg-white p-3 rounded-xl border border-gray-200 shadow-sm">
+                                                                <div className="bg-white p-3 rounded-xl border border-gray-200 shadow-sm cursor-zoom-in" onClick={() => setZoomedQr('feedback')}>
                                                                     <img
                                                                         src={certDeliveryQrCodeUrl}
                                                                         alt="Course Feedback QR Code"
@@ -3505,13 +3528,22 @@ export const CourseDetail: React.FC = () => {
 
                                                     {/* TRAQOM Survey Card */}
                                                     <div className="flex flex-col rounded-xl border border-default overflow-hidden">
-                                                        <div className="bg-teal-600 px-4 py-2.5 flex items-center justify-center gap-2">
+                                                        <div className="relative bg-teal-600 px-4 py-2.5 flex items-center justify-center gap-2">
                                                             <Icon name={IconName.Edit} className="w-4 h-4 text-white flex-shrink-0" />
                                                             <span className="text-sm font-semibold text-white">TRAQOM Survey</span>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setZoomedQr('traqom')}
+                                                                className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-md text-white hover:bg-white/20 transition-colors"
+                                                                title="Show QR code full screen"
+                                                                aria-label="Show TRAQOM Survey QR code full screen"
+                                                            >
+                                                                <Icon name={IconName.ZoomIn} className="w-5 h-5" />
+                                                            </button>
                                                         </div>
                                                         <div className="flex flex-col items-center p-5 bg-surface flex-1 justify-between gap-3">
                                                             <div className="flex flex-col items-center gap-3 w-full">
-                                                                <div className="bg-white p-3 rounded-xl border border-gray-200 shadow-sm">
+                                                                <div className="bg-white p-3 rounded-xl border border-gray-200 shadow-sm cursor-zoom-in" onClick={() => setZoomedQr('traqom')}>
                                                                     <img
                                                                         src={traqomQrCodeUrl}
                                                                         alt="TRAQOM Survey QR Code"
@@ -3549,6 +3581,46 @@ export const CourseDetail: React.FC = () => {
                                             </div>
                                         )}
                                     </Card>
+                                    {zoomedQr && (() => {
+                                        const isFeedback = zoomedQr === 'feedback';
+                                        const title = isFeedback ? 'Course Feedback' : 'TRAQOM Survey';
+                                        // Request a high-res render so the generated QR stays sharp when enlarged.
+                                        const src = isFeedback ? certDeliveryQrCodeUrl.replace('size=200x200', 'size=1000x1000') : traqomQrCodeUrl;
+                                        const link = isFeedback ? certDeliveryLink : traqomSurveyLink;
+                                        const ref = isFeedback
+                                            ? (convertedCourse.courseCode ? `Course Ref: ${convertedCourse.courseCode}` : '')
+                                            : (convertedCourse.courseRunId ? `Course Run ID: ${convertedCourse.courseRunId}` : '');
+                                        return createPortal(
+                                            <div
+                                                className="fixed inset-0 z-[1000] bg-black/90 flex flex-col items-center justify-center p-4 cursor-zoom-out"
+                                                role="dialog"
+                                                aria-modal="true"
+                                                aria-label={`${title} QR code`}
+                                                onClick={() => setZoomedQr(null)}
+                                            >
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setZoomedQr(null)}
+                                                    className="absolute top-4 right-4 p-2 rounded-full text-white bg-white/10 hover:bg-white/25 transition-colors"
+                                                    aria-label="Close full screen QR code"
+                                                >
+                                                    <Icon name={IconName.Close} className="w-7 h-7" />
+                                                </button>
+                                                <h2 className={`text-2xl md:text-4xl font-bold mb-4 ${isFeedback ? 'text-blue-300' : 'text-teal-300'}`}>{title}</h2>
+                                                <div className="bg-white p-4 md:p-6 rounded-2xl">
+                                                    <img
+                                                        src={src}
+                                                        alt={`${title} QR Code`}
+                                                        className="object-contain"
+                                                        style={{ width: 'min(78vh, 88vw)', height: 'min(78vh, 88vw)', imageRendering: 'pixelated' }}
+                                                    />
+                                                </div>
+                                                {ref && <p className="mt-4 text-lg md:text-2xl text-white font-medium">{ref}</p>}
+                                                <p className="mt-1 text-xs md:text-sm text-gray-300 break-all text-center max-w-3xl">{link}</p>
+                                            </div>,
+                                            document.body
+                                        );
+                                    })()}
                                 </div>
                             )}
 
