@@ -1,4 +1,10 @@
-# AI-LMS-TMS
+# SIT-AI-LMS-TMS
+
+> **Singapore Institute of Technology (SIT) fork** of [alfredang/AI-LMS-TMS](https://github.com/alfredang/AI-LMS-TMS) by Tertiary Infotech.
+> All credit for the application belongs to the upstream authors. This fork is used by SIT for evaluation and local
+> development; the upstream repo is unmodified and remains the source of truth. SIT-specific changes are limited to the
+> items in [SIT fork changes](#sit-fork-changes) below. This fork has no affiliation with, and does not use, Tertiary
+> Infotech's production deployment.
 
 <p align="center">
   <strong>A comprehensive Learning Management System (LMS) and Training Management System (TMS) with AI capabilities, designed for Singapore's SkillsFuture training ecosystem.</strong>
@@ -37,6 +43,75 @@ failed OpenAI requests. Credentials are encrypted on the server.
 See [setup and verification](docs/ai-provider.md).
 
 ![AI provider settings](screenshot.png)
+
+## SIT fork changes
+
+Everything SIT adds is additive and opt-in: **no upstream file is modified except this README**, and nothing changes the
+default `docker-compose.yml` behaviour or any tenant's deployment.
+
+| Addition | Purpose |
+|---|---|
+| `docker-compose.sit-local.yml` | Compose overlay for a self-contained local run (loopback-only ports, mock SSG, Claude shim, Open WebUI) |
+| `local/db/` | Tolerant database bootstrap that works around the upstream fresh-install defects (see below) |
+| `local/ssg-mock/` | Mock SSG/TPGateway server so the app can run without real SSG credentials or Singpass/CorpPass |
+| `local/anthropic-shim/` | Model-name shim in front of an OpenAI/Anthropic-compatible gateway |
+| `local/google-oauth/` | Helper that sets up a dedicated Google test calendar |
+| `sit-local.env.example` | Template for `.env` (names and placeholders only; no secrets) |
+
+**SIT branding.** This README and the Open WebUI assistant name ("SIT AI-LMS-TMS Assistant") carry the SIT fork identity.
+The application UI itself (logos, colours, copy) has **not** been re-skinned; applying SIT Canvas styling is future work.
+
+## SIT local Docker run
+
+Runs the whole stack on Docker Desktop, bound to `127.0.0.1` only: app on http://localhost:3003, Postgres on 6434,
+mock SSG on 4010, Open WebUI on 8081. Requires Docker Compose 2.24+ (the overlay uses `!override`).
+
+```bash
+cp sit-local.env.example .env      # then fill in the secrets (see comments in the file)
+export COMPOSE_FILE=docker-compose.yml:docker-compose.sit-local.yml
+docker compose up -d --build
+curl http://localhost:3003/api/health
+```
+
+Sign in with `ADMIN_EMAIL` / `ADMIN_PASSWORD` from `.env` (password login; OTP is off by default). `docker compose down`
+keeps data; `docker compose down -v` wipes the database and the init script rebuilds it. `.env` is gitignored: never
+commit it. Note upstream's `.dockerignore` does not exclude `.env`, so the build copies it into the **local** image;
+never push that image to a registry.
+
+### Workarounds for upstream fresh-install defects
+
+Observed on upstream `main` at `05fd8836` (2026-10-12). They are **worked around here, not fixed in `database/`**, so the
+fork stays mergeable with upstream, and they have not been reported upstream.
+
+1. **`database/01-schema.sql` is not self-consistent on a fresh database.** A bare `CREATE SCHEMA public;` fails, and
+   tables from about line 3090 reference `training_provider` / `course_run` / `app_user` before their primary keys exist.
+   The postgres image runs init files with `ON_ERROR_STOP`, so init aborts and the database comes up empty.
+   *Workaround:* `local/db/00-init.sh` loads the schema twice, tolerating errors on pass 1, and reports anything
+   unexpected on pass 2. The stock init mounts are replaced with an empty file in the overlay.
+2. **No `CREATE EXTENSION` anywhere.** The schema's indexes need `pg_trgm` and the seed needs `pgcrypto`.
+   *Workaround:* `00-init.sh` creates both before loading the schema.
+3. **`database/02-init-admin.sql` is broken.** It writes `app_user.is_protected` (not in the schema or code) and uses
+   `ON CONFLICT (uen)` (no unique constraint).
+   *Workaround:* `local/db/02-local-admin.sql` replaces it.
+4. **`training_provider.ssg_api_base_url` defaults to the real SSG and overrides `SSG_API_URL`.** Some call sites read
+   only the env var, others only the database value.
+   *Workaround:* the local seed repoints the column (and `ssg_default_app`) at the mock; set both `SSG_API_URL` and
+   `SSG_API_BASE_URL` to `http://ssg-mock:4010`.
+
+### Local services
+
+- **Mock SSG** (`local/ssg-mock/`): about 25 endpoints under `/courses/*` and `/tpg/*`, modelled on the app's own parsers,
+  not on SSG's real contract, so it will not reproduce SSG's validation. `/tpg/enrolments*` responses are AES-256-CBC
+  encrypted (key from `CERT_1_ENCRYPTION_KEY`). Admin: `GET /__mock/state`, `POST /__mock/reset`; unhandled routes return
+  404 and log `UNHANDLED`. Use SSG apps 1 and 3 only; app 4's base URL is hardcoded to the real SSG.
+- **Claude via a gateway** (`local/anthropic-shim/`): the app hardcodes Anthropic model names and uses `ANTHROPIC_BASE_URL`.
+  The shim rewrites model names to the gateway's names (override with `MODEL_PREFIX` / `MODEL_MAP`), swaps in
+  `GATEWAY_KEY`, and streams the response. It returns 503 until `GATEWAY_URL` and `GATEWAY_KEY` are set.
+- **Open WebUI**: the in-app chatbot only opens `training_provider.whatsapp_chat_url`; here that points at
+  http://localhost:8081. It is plain chat with no access to LMS data.
+- **Google Calendar** (`local/google-oauth/setup-calendar.js`): creates a dedicated secondary test calendar using the narrow
+  `calendar.app.created` scope. Keep `ENABLE_CALENDAR_WRITES=false` until the test calendar id is set, because the sync
+  falls back to the `primary` calendar when none is configured.
 
 ## Overview
 

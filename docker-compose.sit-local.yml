@@ -1,0 +1,84 @@
+# Local-only override: publish app + Postgres on 127.0.0.1 only,
+# and run the local mock SSG/TPGateway server (local/ssg-mock) next to them.
+services:
+  app:
+    ports: !override
+      - "127.0.0.1:3003:3000"
+  db:
+    ports: !override
+      - "127.0.0.1:6434:5432"
+    volumes:
+      # Upstream's schema file is not self-consistent on a fresh DB (see local/db/00-init.sh), and the
+      # stock init runs it with ON_ERROR_STOP. Neutralise the stock mounts (same targets, empty file),
+      # mount the upstream files read-only for the tolerant two-pass loader instead.
+      - ./local/db/empty.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./local/db/empty.sql:/docker-entrypoint-initdb.d/02-init-admin.sql
+      - ./local/db/00-init.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
+      - ./database/01-schema.sql:/schema/01-schema.sql:ro
+      - ./local/db/02-local-admin.sql:/schema/02-local-admin.sql:ro
+  ssg-mock:
+    image: node:20-alpine
+    working_dir: /srv
+    command: ["node", "server.js"]
+    environment:
+      PORT: "4010"
+      MOCK_ENC_KEY: ${CERT_1_ENCRYPTION_KEY}
+      DATA_FILE: /data/state.json
+    volumes:
+      - ./local/ssg-mock:/srv:ro
+      - ssg_mock_data:/data
+    ports:
+      - "127.0.0.1:4010:4010"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4010/__mock/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # Model-name shim in front of ai-gateway-dev (see local/anthropic-shim/server.js). Internal only: no published port.
+  # Returns 503 until GATEWAY_KEY is set in .env.
+  anthropic-shim:
+    image: node:20-alpine
+    working_dir: /srv
+    command: ["node", "server.js"]
+    environment:
+      PORT: "4020"
+      GATEWAY_URL: ${GATEWAY_URL:-}
+      GATEWAY_KEY: ${GATEWAY_KEY:-}
+    volumes:
+      - ./local/anthropic-shim:/srv:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4020/__shim/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # Open WebUI as the chat launcher target (replaces the WhatsApp/Telegram group). Talks straight to the
+  # AI Gateway (OpenAI-compatible /v1) with the same key as the shim. Admin is auto-created from ADMIN_EMAIL /
+  # ADMIN_PASSWORD on first start; self-signup is off. Loopback only.
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:v0.11.0-slim
+    environment:
+      OPENAI_API_BASE_URL: ${GATEWAY_URL}/v1
+      OPENAI_API_KEY: ${GATEWAY_KEY}
+      ENABLE_OLLAMA_API: "false"
+      WEBUI_NAME: "SIT AI-LMS-TMS Assistant"
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY}
+      WEBUI_ADMIN_EMAIL: ${ADMIN_EMAIL}
+      WEBUI_ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      WEBUI_ADMIN_NAME: Local Admin
+      ENABLE_SIGNUP: "false"
+      ANONYMIZED_TELEMETRY: "false"
+      SCARF_NO_ANALYTICS: "true"
+      DO_NOT_TRACK: "true"
+    volumes:
+      - open_webui_data:/app/backend/data
+    ports:
+      - "127.0.0.1:8081:8080"
+    restart: unless-stopped
+
+volumes:
+  ssg_mock_data:
+  open_webui_data:
