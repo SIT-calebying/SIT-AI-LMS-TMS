@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ReactDOM from 'react-dom';
-import { Checkbox } from '../ui/Checkbox';
 import { getLocalYMD } from '@/lib/dateHelpers';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';

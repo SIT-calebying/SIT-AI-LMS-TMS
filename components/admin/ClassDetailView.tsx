@@ -51,6 +51,8 @@ interface OperationalSummary {
   courseRunUuid: string;
   overallGrantStatus: string;
   overallClaimStatus: string;
+  virtualMeetingLink?: string | null;
+  virtualMeetingProvider?: 'google_meet' | 'zoom' | 'teams' | string | null;
 }
 
 interface EnrolledLearner {

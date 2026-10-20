@@ -163,3 +163,142 @@ export const Switch: React.FC<SwitchProps> = ({ checked, onChange, disabled = fa
     </button>
   );
 };
+
+// ── Common form/input components ───────────────────────────────────────────────
+
+interface InputProps {
+  value?: string | number;
+  onChange?: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  placeholder?: string;
+  type?: 'text' | 'email' | 'password' | 'number' | 'date';
+  disabled?: boolean;
+  className?: string;
+  name?: string;
+}
+
+export const Input: React.FC<InputProps> = ({ 
+  value, onChange, placeholder, type = 'text', disabled = false, className = '', name 
+}) => (
+  <input
+    name={name}
+    type={type}
+    value={value}
+    onChange={onChange}
+    placeholder={placeholder}
+    disabled={disabled}
+    className={`px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 ${className}`}
+  />
+);
+
+export interface CheckboxProps {
+  checked?: boolean;
+  onChange?: (checked: boolean) => void;
+  label?: string;
+  disabled?: boolean;
+  className?: string;
+}
+
+export const Checkbox: React.FC<CheckboxProps> = ({ 
+  checked = false, onChange, label, disabled = false, className = '' 
+}) => (
+  <label className={`inline-flex items-center gap-2 cursor-pointer ${disabled ? 'opacity-50' : ''} ${className}`}>
+    <input
+      type="checkbox"
+      checked={checked}
+      onChange={(e) => onChange?.(e.target.checked)}
+      disabled={disabled}
+      className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+    />
+    {label && <span>{label}</span>}
+  </label>
+);
+
+export interface SearchableSelectOption {
+  value: string;
+  label: string;
+}
+
+interface SearchableSelectProps {
+  options: SearchableSelectOption[];
+  value?: string;
+  onChange?: (value: string) => void;
+  placeholder?: string;
+  disabled?: boolean;
+  className?: string;
+  multiple?: boolean;
+  searchPlaceholder?: string;
+}
+
+export const SearchableSelect: React.FC<SearchableSelectProps> = ({ 
+  options, value, onChange, placeholder = 'Select...', disabled = false, className = '', multiple, searchPlaceholder = 'Search...' 
+}) => {
+  const [open, setOpen] = React.useState(false);
+  const [search, setSearch] = React.useState('');
+
+  const filtered = React.useMemo(() => {
+    if (!search) return options;
+    const lower = search.toLowerCase();
+    return options.filter(o => o.label.toLowerCase().includes(lower));
+  }, [options, search]);
+
+  return (
+    <div className={`relative ${className}`}>
+      <button
+        type="button"
+        onClick={() => !disabled && setOpen(!open)}
+        disabled={disabled}
+        className={`w-full px-3 py-2 text-left border rounded-md focus:ring-2 focus:ring-blue-500 ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+      >
+        {value || placeholder}
+      </button>
+      {open && (
+        <>
+          <input
+            autoFocus
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={searchPlaceholder}
+            className="absolute top-full left-0 right-0 z-10 mt-1 px-3 py-1.5 border-b rounded-t-md bg-white focus:outline-none"
+          />
+          <div className="absolute top-[42px] left-0 right-0 z-10 max-h-60 overflow-auto border rounded-b-md bg-white shadow-lg">
+            {filtered.map(opt => (
+              <button
+                key={opt.value}
+                onClick={() => { onChange?.(opt.value); setOpen(false); setSearch(''); }}
+                className={`w-full px-3 py-2 text-sm text-left hover:bg-gray-100 ${value === opt.value ? 'bg-blue-50 font-semibold' : ''}`}
+              >
+                {opt.label}
+              </button>
+            ))}
+            {filtered.length === 0 && <div className="px-3 py-2 text-sm text-gray-400">No matches</div>}
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
+export interface SelectProps {
+  value?: string;
+  onChange?: (e: React.ChangeEvent<HTMLSelectElement>) => void;
+  options: Array<{ value: string; label: string }>;
+  placeholder?: string;
+  disabled?: boolean;
+  className?: string;
+}
+
+export const Select: React.FC<SelectProps> = ({ 
+  value, onChange, options, placeholder, disabled = false, className = '' 
+}) => (
+  <select
+    value={value}
+    onChange={onChange}
+    disabled={disabled}
+    className={`px-3 py-2 border rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${className} ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+  >
+    {placeholder && <option value="">{placeholder}</option>}
+    {options.map(o => (
+      <option key={o.value} value={o.value}>{o.label}</option>
+    ))}
+  </select>
+);
