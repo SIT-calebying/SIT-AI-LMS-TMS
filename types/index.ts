@@ -39,7 +39,8 @@ export enum View {
   FeedbackForm = 'feedbackForm',
   FeedbackFormResponses = 'feedbackFormResponses',
   EdTools = 'edTools',
-  Tools = 'tools'
+  Tools = 'tools',
+  Finance = 'finance'
 }
 
 export enum UserRole {
@@ -351,6 +352,8 @@ export interface Course {
   casScore?: number | null;
   esScore?: number | null;
   isLeaderboardEnabled?: boolean;
+  /** Whether this course is whitelisted against SSG blacklist checks. */
+  whitelistStatus?: boolean | null;
   courseLink?: string;
   brochureLink?: string;
   skillsfutureLink?: string;
