@@ -1,0 +1,1 @@
+-- intentionally empty: replaces the stock init file, see 00-init.sh
