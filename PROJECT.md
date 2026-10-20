@@ -49,17 +49,20 @@ Only what differs from upstream `main` (see also `SIT_PATCHES.md`):
 1. **SSG stub is inert** — `lib/ssg/services/stub-credentials.ts` is an SIT-added stub that **nothing imports**; the
    SSG client is a real client. When credentials are absent, `utils/encryption-service.ts` throws and
    `services/credentials-service.ts` returns `null` (see `lib/ssg/PROJECT.md`).
-2. **Extended `course` interface** — added optional fields: `whitelistStatus`, `fundingValidityStart`,
-   `traqomResponseRate`, `traqomQualityRating`, `casScore`, `esScore`, `renewalApplicationNo`.
-3. **Funding Validity dashboard** — full renewal-status tracking with bulk Excel upload
-   (`components/admin/FundingValidityView.tsx`), backing `course` columns (`actual_renew_date`, `renewal_application_no`).
-4. **Shared UI library** — `components/ui/index.tsx` exports `Button`, `Card`, `Icon`, `Spinner`, `Switch`, `Input`,
-   `Checkbox`, `SearchableSelect`, `Select`.
-5. **Hooks barrel** — `hooks/index.ts` re-exports `useDeveloperCourses` only; the other hooks
+2. **Shared UI primitives** — `components/ui/index.tsx` additionally exports `Input`, `Checkbox`, `SearchableSelect`,
+   `Select` (alongside the existing `Button`, `Card`, `Icon`, `Spinner`, `Switch`). Same-named standalone files in
+   `components/ui/` are separate and not shared.
+3. **Hooks barrel** — `hooks/index.ts` re-exports `useDeveloperCourses` only; the other hooks
    (`useCourses`, `useProfile`, `useSessionReschedule`, `useScheduleChangeConfirm`, `useTrainerCourses`,
    `useCourseValidityFeature`, `useAppVersion`, `useTrainerProfile`) are standalone `hooks/*.ts(x)` files imported
-   directly via the `@hooks/*` alias. (Barrel as written, verified from source.)
-6. **Extra types** — `View.Finance` and `Course.whitelistStatus` added to `types/index.ts`.
+   directly via the `@hooks/*` alias.
+4. **Type additions** — `View.Finance` and `Course.whitelistStatus` in `types/index.ts`;
+   `virtualMeetingLink` / `virtualMeetingProvider` on `OperationalSummary` in `ClassDetailView.tsx`.
+5. **Dead import removed** — `AllCourseRunsView.tsx` no longer imports the nonexistent `../ui/Checkbox`.
+
+Not SIT changes (already upstream, by Tertiary Infotech): the Funding Validity dashboard
+(`components/admin/FundingValidityView.tsx`), the extended `course` fields (`fundingValidityStart`, `traqom*`,
+`casScore`, `esScore`, `renewalApplicationNo`) and course-code history (`course_code_history`, `course_code_at()`).
 
 ## Subsystem Projects
 
