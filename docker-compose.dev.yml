@@ -1,0 +1,24 @@
+# Development overlay — runs Next.js `npm run dev` directly on host files
+# Replace the production image for local debugging only (port :8090).
+services:
+  app-dev:
+    image: node:20-alpine
+    working_dir: /app
+    ports:
+      - "8090:3000"
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://postgres:${DB_PASSWORD:-password123}@db:5432/${DB_NAME:-lmsdb}?sslmode=disable
+      TZ: Asia/Singapore
+    volumes:
+      # Mount entire source tree — hot-reload works automatically
+      - .:/app
+      # Keep npm install cache outside bind mount
+      - /tmp/.npm-cache:/root/.npm
+      - /tmp/.next-cache:/app/.next/cache
+    command: >
+      sh -c "cd /app && npm install --legacy-peer-deps 2>/dev/null; \
+             npx next dev -p 3000 -H 0.0.0.0"
+    depends_on:
+      db:
+        condition: service_healthy

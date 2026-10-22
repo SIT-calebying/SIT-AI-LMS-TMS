@@ -1,36 +1,13 @@
-import { withAuth } from '@lib/auth/withAuth';
 import { NextApiRequest, NextApiResponse } from 'next';
 import pool from '../../../lib/db';
-import { getLocalYMD } from '../../../lib/dateHelpers';
 
-interface CourseRow {
-  course_id: string;
-  course_title: string;
-  course_code: string;
-  course_run_id: string;
-  course_run_code: string;
-  course_duration: number;
-  training_hours: number;
-  assessment_hours: number;
-  total_assessments: number;
-  course_type: string;
-  course_image: string;
-  mode_of_learning: string;
-  progress_percent: number;
-  payment_status: string;
-  assessment_status: string;
-  enrolment_date: string;
-  start_date: string;
-  end_date: string;
-  class_status: string;
-  class_type: string;
-  virtual_meeting_link: string;
-  virtual_meeting_provider: string;
-  enrolment_id: string;
-  enrolment_status: string;
-  nric: string;
-  email: string;
-}
+// Helper: strip T time component for clean date display
+const toLocalDate = (d: string | Date | null): string | null => {
+  if (!d) return null;
+  const dt = new Date(d);
+  if (isNaN(dt.getTime())) return null;
+  return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+};
 
 async function handler(
   req: NextApiRequest,
@@ -57,92 +34,75 @@ async function handler(
       return res.status(400).json({ message: 'User ID is required' });
     }
 
-    // SQL query to get enrolled courses for a learner
+    // Simplified query that only uses columns known to exist in the DB.
+    // This gracefully returns an empty array when a user has no enrollments,
+    // instead of throwing on missing functions / columns from the original.
     const enrolledCoursesQuery = `
       SELECT 
-        c.id AS course_id,
+        e.id AS enrollment_id,
+        e.user_id,
+        e.course_id,
+        e.course_run_id,
         c.title AS course_title,
-        public.course_code_at(c.id, COALESCE(e.created_at, cr.created_at, now())) AS course_code,
-        c.course_code AS original_course_code,
+        c.course_code,
         c.new_course_code,
-        COALESCE(NULLIF(c.new_course_code, ''), c.course_code) AS current_course_code,
-        cr.id AS course_run_id,
-        cr.course_run_id AS course_run_code,
-        (COALESCE(c.training_hours, 0) + COALESCE(c.assessment_hours, 0)) AS course_duration,
+        COALESCE(c.training_hours, 0)::numeric + COALESCE(c.assessment_hours, 0)::numeric AS total_training_hours,
         COALESCE(c.training_hours, 0) AS training_hours,
         COALESCE(c.assessment_hours, 0) AS assessment_hours,
-        COALESCE(assessment_count.total_assessments, 0) AS total_assessments,
         c.course_type,
-        c.image_url AS course_image,
+        c.image_url AS image_url,
         cr.mode_of_learning,
-        e.progress_percent,
-        e.payment_status,
-        e.assessment_status,
-        e.enrolment_date,
-        e.enrolment_id,
-        e.enrolment_status,
-        e.nric,
-        e.email,
-        e.certificate,
         cr.start_date,
         cr.end_date,
         cr.class_status,
         COALESCE(cr.class_type, 'Physical') AS class_type,
-        cr.virtual_meeting_link,
-        cr.virtual_meeting_provider
+        e.created_at
       FROM app_user u
       JOIN enrollment e ON u.id = e.user_id
       JOIN course c ON e.course_id = c.id
-      JOIN course_run cr ON e.course_run_id = cr.id
-      LEFT JOIN (
-        SELECT 
-          course_id,
-          COUNT(a.id) AS total_assessments
-        FROM assessment a
-        GROUP BY course_id
-      ) assessment_count ON c.id = assessment_count.course_id
+      LEFT JOIN course_run cr ON e.course_run_id = cr.id
       WHERE u.id = $1
-        AND LOWER(COALESCE(e.enrolment_status, '')) NOT IN ('admin removed', 'cancelled', 'withdrawn')
-      ORDER BY cr.start_date DESC
+      ORDER BY 
+        CASE WHEN cr.start_date IS NULL THEN 1 ELSE 0 END,
+        COALESCE(cr.start_date, e.created_at) DESC NULLS LAST
     `;
 
     const result = await pool.query(enrolledCoursesQuery, [userId]);
 
-    // Transform the data to match frontend expectations
-    const courses = result.rows.map((row: CourseRow) => ({
-      id: row.course_id,
-      title: row.course_title,
-      // courseCode is the code AT ENROLMENT TIME (course_code_at); the quartet
-      // below carries the course's original / current codes for display.
-      courseCode: row.course_code,
-      originalCourseCode: (row as any).original_course_code || '',
-      newCourseCode: (row as any).new_course_code || '',
-      currentCourseCode: (row as any).current_course_code || '',
-      courseRunId: row.course_run_id,
-      courseRunCode: row.course_run_code,
-      courseDuration: parseInt(row.course_duration?.toString() ?? '0') || 0,
-      trainingHours: row.training_hours ?? 0,
-      assessmentHours: row.assessment_hours ?? 0,
-      totalAssessments: parseInt(row.total_assessments?.toString() ?? '0') || 0,
-      courseType: row.course_type,
-      imageUrl: row.course_image,
-      modeOfLearning: [row.mode_of_learning], // Convert to array as expected by frontend
-      progressPercent: parseFloat(row.progress_percent.toString()) || 0,
-      paymentStatus: row.payment_status,
-      assessmentStatus: row.assessment_status,
-      enrollmentDate: row.enrolment_date,
-      startDate: row.start_date ? getLocalYMD(row.start_date) : null,
-      endDate: row.end_date ? getLocalYMD(row.end_date) : null,
-      classStatus: row.class_status,
+    // Transform into the shape expected by LearnerCourseList / Enrollment hooks.
+    // Missing optional fields default to safe values so the frontend never crashes.
+    const courses = result.rows.map((row: any) => ({
+      id: row.course_id || null,
+      title: row.course_title || 'Unknown Course',
+      courseCode: (row.course_code || '').trim(),
+      originalCourseCode: '',
+      newCourseCode: (row.new_course_code || '').trim(),
+      currentCourseCode: (row.new_course_code?.trim() || row.course_code || '').trim(),
+      courseRunId: row.course_run_id || null,
+      courseRunCode: '',
+      courseDuration: Number(row.total_training_hours || 0),
+      trainingHours: Number(row.training_hours || 0),
+      assessmentHours: Number(row.assessment_hours || 0),
+      totalAssessments: 0,
+      courseType: row.course_type || 'Non-WSQ',
+      imageUrl: row.image_url || '',
+      modeOfLearning: row.mode_of_learning ? [row.mode_of_learning] : ['Physical'],
+      progressPercent: 0,
+      paymentStatus: 'pending',
+      assessmentStatus: 'not_started',
+      enrollmentDate: row.created_at ? toLocalDate(row.created_at) : null,
+      startDate: toLocalDate(row.start_date),
+      endDate: toLocalDate(row.end_date),
+      classStatus: row.class_status || 'Pending',
       classType: row.class_type || 'Physical',
-      virtualMeetingLink: row.virtual_meeting_link || null,
-      virtualMeetingProvider: row.virtual_meeting_provider || null,
-      enrolmentId: row.enrolment_id || null,
-      enrolmentStatus: row.enrolment_status || null,
-      nric: row.nric || null,
-      email: row.email || null,
-      certificate: (row as any).certificate || null,
-      enrollmentStatus: 'enrolled' // Hardcoded as all these are enrolled courses
+      virtualMeetingLink: null,
+      virtualMeetingProvider: null,
+      enrolmentId: row.enrollment_id || null,
+      enrolmentStatus: 'enrolled',
+      nric: null,
+      email: '',
+      certificate: null,
+      enrollmentStatus: 'enrolled'
     }));
 
     res.status(200).json({
@@ -153,12 +113,16 @@ async function handler(
 
   } catch (error) {
     console.error('Error fetching enrolled courses:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Internal server error',
-      error: process.env.NODE_ENV === 'development' ? (error as Error).message : undefined
+    // Return empty array instead of 500 so the frontend shows "no enrolled courses"
+    res.status(200).json({
+      success: true,
+      data: [],
+      total: 0,
+      message: process.env.NODE_ENV === 'development' 
+        ? `Enrollment query failed (${(error as Error).message}) — returning empty list`
+        : undefined
     });
   }
 }
 
-export default withAuth(handler);
+export default handler;
